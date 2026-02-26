@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useTransition, useCallback } from "react";
+import { useState, useEffect, useTransition, useCallback, useRef } from "react";
 import { DashboardHeader } from "@/components/contasync/DashboardHeader";
 import { FileUpload } from "@/components/contasync/FileUpload";
 import {
@@ -29,8 +29,10 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { Progress } from "@/components/ui/progress";
 import {
   FileText,
+  Layers,
   Receipt,
   Loader2,
   Sparkles,
@@ -55,6 +57,10 @@ import {
   deleteInvoice as deleteInvoiceAction,
 } from "@/lib/actions/invoices";
 import { getOrCreatePeriod } from "@/lib/actions/periods";
+import {
+  matchInvoicesToTransactions,
+  type ScannedInvoice,
+} from "@/lib/ocr/matcher";
 import { useRouter } from "next/navigation";
 
 // ============================================
@@ -174,6 +180,20 @@ export default function UploadPage() {
     useState(false);
   const [deletingStatement, setDeletingStatement] = useState(false);
 
+  // Bulk import
+  const [bulkState, setBulkState] = useState<"idle" | "processing" | "done">(
+    "idle"
+  );
+  const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 });
+  const [bulkMatchedCount, setBulkMatchedCount] = useState(0);
+  const [unmatchedInvoices, setUnmatchedInvoices] = useState<ScannedInvoice[]>(
+    []
+  );
+  const [assignSelections, setAssignSelections] = useState<
+    Record<number, string>
+  >({});
+  const bulkFilesRef = useRef<Map<number, File>>(new Map());
+
   // Manual invoice add
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [manualType, setManualType] = useState<"received" | "issued">(
@@ -280,6 +300,11 @@ export default function UploadPage() {
     setStatementFiles([]);
     setOcrStatus("");
     setStatementError("");
+    setBulkState("idle");
+    setUnmatchedInvoices([]);
+    setBulkMatchedCount(0);
+    setAssignSelections({});
+    bulkFilesRef.current.clear();
   }
 
   // ============================================
@@ -735,6 +760,236 @@ export default function UploadPage() {
     setShowDeleteStatementDialog(false);
     setDeletingStatement(false);
     toast.success("Extras de cont sters");
+  }
+
+  // ============================================
+  // BULK INVOICE IMPORT
+  // ============================================
+  async function handleBulkInvoiceImport(files: File[]) {
+    if (files.length === 0 || !company || !period) return;
+
+    setBulkState("processing");
+    setBulkProgress({ current: 0, total: files.length });
+    bulkFilesRef.current.clear();
+
+    const supabase = createClient();
+    const scanned: ScannedInvoice[] = [];
+
+    // Process files in batches of 3
+    const BATCH_SIZE = 3;
+    for (let i = 0; i < files.length; i += BATCH_SIZE) {
+      const batch = files.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(async (file, batchIdx) => {
+          const globalIdx = i + batchIdx;
+          bulkFilesRef.current.set(globalIdx, file);
+
+          // Upload to storage
+          const filePath = `${company.id}/${selectedYear}/${String(selectedMonth).padStart(2, "0")}/invoices/${Date.now()}_${globalIdx}_${file.name}`;
+          const { data: uploadData, error: uploadError } =
+            await supabase.storage.from("documents").upload(filePath, file);
+
+          if (uploadError) {
+            return {
+              fileIndex: globalIdx,
+              fileName: file.name,
+              storagePath: "",
+              ocrData: null,
+              ocrConfidence: 0,
+            } as ScannedInvoice;
+          }
+
+          // OCR scan
+          let ocrData = null;
+          let ocrConfidence = 0;
+
+          if (file.name.toLowerCase().endsWith(".pdf")) {
+            try {
+              const ocrRes = await fetch("/api/ocr/process", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  storagePath: uploadData.path,
+                  fileType: "invoice",
+                }),
+              });
+              let result;
+              try {
+                const text = await ocrRes.text();
+                result = text ? JSON.parse(text) : { success: false };
+              } catch {
+                result = { success: false };
+              }
+              if (result.success && result.data) {
+                ocrData = result.data;
+                ocrConfidence = result.confidence || 0;
+              }
+            } catch {
+              // OCR failed for this file
+            }
+          }
+
+          return {
+            fileIndex: globalIdx,
+            fileName: file.name,
+            storagePath: uploadData.path,
+            ocrData,
+            ocrConfidence,
+          } as ScannedInvoice;
+        })
+      );
+
+      scanned.push(...batchResults);
+      setBulkProgress({
+        current: Math.min(i + BATCH_SIZE, files.length),
+        total: files.length,
+      });
+    }
+
+    // Run matching algorithm
+    const matchResults = matchInvoicesToTransactions(
+      scanned,
+      detectedTransactions
+    );
+
+    // Process matched pairs: create invoice records
+    let matchedCount = 0;
+    const unmatched: ScannedInvoice[] = [];
+
+    for (const result of matchResults) {
+      if (result.transaction) {
+        const inv = result.invoice;
+        const tx = result.transaction;
+
+        const totalAmount = inv.ocrData?.total_amount || tx.amount;
+        const vatAmount =
+          Math.round((totalAmount - totalAmount / 1.19) * 100) / 100;
+        const amountWithoutVat =
+          Math.round((totalAmount - vatAmount) * 100) / 100;
+
+        const formData = new FormData();
+        formData.set("company_id", company.id);
+        formData.set("period_id", period.id);
+        formData.set("type", tx.type === "debit" ? "received" : "issued");
+        formData.set("invoice_number", inv.ocrData?.invoice_number || "");
+        formData.set(
+          "partner_name",
+          inv.ocrData?.partner_name || tx.description
+        );
+        formData.set("partner_cui", inv.ocrData?.partner_cui || "");
+        formData.set("issue_date", inv.ocrData?.issue_date || tx.date);
+        formData.set("total_amount", String(totalAmount));
+        formData.set("vat_amount", String(vatAmount));
+        formData.set("amount_without_vat", String(amountWithoutVat));
+        formData.set("currency", tx.currency);
+        formData.set("file_name", inv.fileName);
+        formData.set("file_url", inv.storagePath);
+
+        const uploadResult = await uploadInvoice(formData);
+
+        if (!uploadResult.error) {
+          matchedCount++;
+          setDetectedTransactions((prev) =>
+            prev.map((t) =>
+              t.id === tx.id
+                ? {
+                    ...t,
+                    invoiceUploaded: true,
+                    invoiceFile: bulkFilesRef.current.get(inv.fileIndex),
+                    invoiceId: uploadResult.data?.id,
+                    ocrData: inv.ocrData || undefined,
+                  }
+                : t
+            )
+          );
+        }
+      } else {
+        unmatched.push(result.invoice);
+      }
+    }
+
+    setUnmatchedInvoices(unmatched);
+    setBulkMatchedCount(matchedCount);
+    setBulkState("done");
+
+    if (matchedCount > 0) {
+      toast.success(`${matchedCount} facturi potrivite automat!`);
+    }
+    if (unmatched.length > 0) {
+      toast.info(
+        `${unmatched.length} facturi nu au putut fi asociate automat.`
+      );
+    }
+
+    router.refresh();
+  }
+
+  // ============================================
+  // MANUAL ASSIGN (unmatched bulk invoices)
+  // ============================================
+  async function handleManualBulkAssign(
+    invoice: ScannedInvoice,
+    txId: string
+  ) {
+    const tx = detectedTransactions.find((t) => t.id === txId);
+    if (!tx || !company || !period) return;
+
+    const totalAmount = invoice.ocrData?.total_amount || tx.amount;
+    const vatAmount =
+      Math.round((totalAmount - totalAmount / 1.19) * 100) / 100;
+    const amountWithoutVat =
+      Math.round((totalAmount - vatAmount) * 100) / 100;
+
+    const formData = new FormData();
+    formData.set("company_id", company.id);
+    formData.set("period_id", period.id);
+    formData.set("type", tx.type === "debit" ? "received" : "issued");
+    formData.set("invoice_number", invoice.ocrData?.invoice_number || "");
+    formData.set(
+      "partner_name",
+      invoice.ocrData?.partner_name || tx.description
+    );
+    formData.set("partner_cui", invoice.ocrData?.partner_cui || "");
+    formData.set("issue_date", invoice.ocrData?.issue_date || tx.date);
+    formData.set("total_amount", String(totalAmount));
+    formData.set("vat_amount", String(vatAmount));
+    formData.set("amount_without_vat", String(amountWithoutVat));
+    formData.set("currency", tx.currency);
+    formData.set("file_name", invoice.fileName);
+    formData.set("file_url", invoice.storagePath);
+
+    const result = await uploadInvoice(formData);
+
+    if (result.error) {
+      toast.error("Eroare la asocierea facturii");
+      return;
+    }
+
+    // Update transaction state
+    setDetectedTransactions((prev) =>
+      prev.map((t) =>
+        t.id === txId
+          ? {
+              ...t,
+              invoiceUploaded: true,
+              invoiceFile: bulkFilesRef.current.get(invoice.fileIndex),
+              invoiceId: result.data?.id,
+              ocrData: invoice.ocrData || undefined,
+            }
+          : t
+      )
+    );
+
+    // Remove from unmatched
+    setUnmatchedInvoices((prev) =>
+      prev.filter((i) => i.fileIndex !== invoice.fileIndex)
+    );
+    setAssignSelections((prev) => {
+      const next = { ...prev };
+      delete next[invoice.fileIndex];
+      return next;
+    });
+    toast.success("Factura asociata cu succes!");
   }
 
   // ============================================
@@ -1285,6 +1540,181 @@ export default function UploadPage() {
               </Card>
             )}
 
+            {/* ==================== BULK IMPORT ==================== */}
+            {detectedTransactions.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 rounded-lg bg-blue-50">
+                      <Layers className="size-4 text-blue-600" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-base">
+                        Importa facturi in masa
+                      </CardTitle>
+                      <CardDescription>
+                        Trage toate facturile PDF — AI le potriveste automat cu
+                        tranzactiile din extras
+                      </CardDescription>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {/* IDLE — Show drop zone */}
+                  {bulkState === "idle" && (
+                    <FileUpload
+                      accept=".pdf,.jpg,.png"
+                      multiple={true}
+                      label="Trage toate facturile aici sau click pentru a selecta"
+                      sublabel="PDF, JPG, PNG — selecteaza mai multe fisiere odata"
+                      onFilesSelected={handleBulkInvoiceImport}
+                    />
+                  )}
+
+                  {/* PROCESSING — Show progress */}
+                  {bulkState === "processing" && (
+                    <div className="space-y-4 py-4">
+                      <div className="flex items-center justify-center gap-3">
+                        <Sparkles className="size-5 text-blue-600 animate-pulse" />
+                        <p className="text-sm font-medium text-blue-700">
+                          Se scaneaza factura {bulkProgress.current} din{" "}
+                          {bulkProgress.total}...
+                        </p>
+                      </div>
+                      <Progress
+                        value={
+                          bulkProgress.total > 0
+                            ? (bulkProgress.current / bulkProgress.total) * 100
+                            : 0
+                        }
+                      />
+                      <p className="text-xs text-center text-muted-foreground">
+                        AI citeste fiecare factura si o potriveste cu
+                        tranzactia corespunzatoare
+                      </p>
+                    </div>
+                  )}
+
+                  {/* DONE — Show results */}
+                  {bulkState === "done" && (
+                    <div className="space-y-4">
+                      {/* Summary */}
+                      <div
+                        className={`flex items-center gap-3 p-3 rounded-lg border ${
+                          bulkMatchedCount > 0
+                            ? "bg-emerald-50 border-emerald-200"
+                            : "bg-amber-50 border-amber-200"
+                        }`}
+                      >
+                        <CheckCircle2
+                          className={`size-5 ${bulkMatchedCount > 0 ? "text-emerald-600" : "text-amber-600"}`}
+                        />
+                        <div>
+                          <p
+                            className={`text-sm font-medium ${bulkMatchedCount > 0 ? "text-emerald-700" : "text-amber-700"}`}
+                          >
+                            {bulkMatchedCount > 0
+                              ? `${bulkMatchedCount} facturi potrivite automat`
+                              : "Nicio factura nu a putut fi potrivita automat"}
+                          </p>
+                          {unmatchedInvoices.length > 0 && (
+                            <p className="text-xs text-amber-600 mt-0.5">
+                              {unmatchedInvoices.length} facturi necesita
+                              asociere manuala
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Unmatched invoices */}
+                      {unmatchedInvoices.length > 0 && (
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-muted-foreground">
+                            Facturi neasociate:
+                          </p>
+                          {unmatchedInvoices.map((inv) => (
+                            <div
+                              key={inv.fileIndex}
+                              className="flex flex-col sm:flex-row sm:items-center gap-3 p-3 rounded-lg border bg-amber-50/50"
+                            >
+                              <div className="flex items-center gap-2 flex-1 min-w-0">
+                                <FileText className="size-4 text-amber-600 shrink-0" />
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium truncate">
+                                    {inv.fileName}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {inv.ocrData?.partner_name || "Necunoscut"}
+                                    {inv.ocrData?.total_amount
+                                      ? ` — ${inv.ocrData.total_amount.toLocaleString("ro-RO", { minimumFractionDigits: 2 })} RON`
+                                      : ""}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Select
+                                  value={
+                                    assignSelections[inv.fileIndex] || ""
+                                  }
+                                  onValueChange={(v) =>
+                                    setAssignSelections((prev) => ({
+                                      ...prev,
+                                      [inv.fileIndex]: v,
+                                    }))
+                                  }
+                                >
+                                  <SelectTrigger className="w-56">
+                                    <SelectValue placeholder="Selecteaza tranzactia" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {detectedTransactions
+                                      .filter((t) => !t.invoiceUploaded)
+                                      .map((t) => (
+                                        <SelectItem key={t.id} value={t.id}>
+                                          {t.description.substring(0, 20)} —{" "}
+                                          {t.amount.toLocaleString("ro-RO")}{" "}
+                                          {t.currency}
+                                        </SelectItem>
+                                      ))}
+                                  </SelectContent>
+                                </Select>
+                                <Button
+                                  size="sm"
+                                  disabled={!assignSelections[inv.fileIndex]}
+                                  onClick={() =>
+                                    handleManualBulkAssign(
+                                      inv,
+                                      assignSelections[inv.fileIndex]
+                                    )
+                                  }
+                                >
+                                  Asociaza
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Reset button */}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setBulkState("idle");
+                          setUnmatchedInvoices([]);
+                          setBulkMatchedCount(0);
+                          setAssignSelections({});
+                        }}
+                      >
+                        Importa mai multe facturi
+                      </Button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
             {/* Manual invoice add + No transactions state */}
             <Card>
               <CardHeader>
@@ -1465,6 +1895,11 @@ export default function UploadPage() {
                   setStatementFiles([]);
                   setCurrentStatementId(null);
                   setDetectedTransactions([]);
+                  setBulkState("idle");
+                  setUnmatchedInvoices([]);
+                  setBulkMatchedCount(0);
+                  setAssignSelections({});
+                  bulkFilesRef.current.clear();
                 }}
               >
                 Incarca alt extras
