@@ -790,12 +790,14 @@ export default function UploadPage() {
             await supabase.storage.from("documents").upload(filePath, file);
 
           if (uploadError) {
+            console.warn("[Bulk] Upload failed for:", file.name, uploadError.message);
             return {
               fileIndex: globalIdx,
               fileName: file.name,
               storagePath: "",
               ocrData: null,
               ocrConfidence: 0,
+              rawText: "",
             } as ScannedInvoice;
           }
 
@@ -852,12 +854,25 @@ export default function UploadPage() {
       });
     }
 
+    // Debug: log scanned invoices before matching
+    console.log("[Bulk] Scanned invoices:", scanned.length);
+    for (const s of scanned) {
+      console.log(`  [${s.fileIndex}] ${s.fileName} | OCR: ${s.ocrData?.partner_name || "none"} | rawText: ${s.rawText ? s.rawText.length + " chars" : "EMPTY"}`);
+    }
+    console.log("[Bulk] Available transactions:", detectedTransactions.filter(t => !t.invoiceUploaded).length);
+
     // Run matching algorithm (pass company name to filter out own-company false matches)
     const matchResults = matchInvoicesToTransactions(
       scanned,
       detectedTransactions,
       company.name
     );
+
+    // Debug: log match results
+    console.log("[Bulk] Match results:", matchResults.length);
+    for (const r of matchResults) {
+      console.log(`  ${r.invoice.fileName.substring(0, 40)} -> ${r.transaction ? r.transaction.description : "UNMATCHED"} (score: ${r.score})`);
+    }
 
     // Process matched pairs: create invoice records
     let matchedCount = 0;
