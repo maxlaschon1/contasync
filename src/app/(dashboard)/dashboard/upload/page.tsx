@@ -232,7 +232,14 @@ export default function UploadPage() {
         body: JSON.stringify({ storagePath, fileType: "statement" }),
       });
 
-      const ocrResult = await ocrRes.json();
+      let ocrResult;
+      try {
+        const text = await ocrRes.text();
+        ocrResult = text ? JSON.parse(text) : { success: false };
+      } catch {
+        console.error("[OCR] Failed to parse response, status:", ocrRes.status);
+        ocrResult = { success: false };
+      }
 
       if (ocrResult.success && ocrResult.transactions && ocrResult.transactions.length > 0) {
         // Save transactions to DB
@@ -315,7 +322,13 @@ export default function UploadPage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ storagePath: invoiceStoragePath, fileType: "invoice" }),
           });
-          const ocrResult = await ocrRes.json();
+          let ocrResult;
+          try {
+            const text = await ocrRes.text();
+            ocrResult = text ? JSON.parse(text) : { success: false };
+          } catch {
+            ocrResult = { success: false };
+          }
           if (ocrResult.success && ocrResult.data) {
             ocrData = ocrResult.data;
           }
@@ -405,7 +418,13 @@ export default function UploadPage() {
         body: JSON.stringify({ storagePath: tempUpload.path, fileType: "invoice" }),
       });
 
-      const result = await res.json();
+      let result;
+      try {
+        const text = await res.text();
+        result = text ? JSON.parse(text) : { success: false };
+      } catch {
+        result = { success: false };
+      }
       await supabase.storage.from("documents").remove([tempPath]);
 
       if (result.success && result.data) {

@@ -4,8 +4,11 @@
  * Uses pdf-parse for PDF text extraction + intelligent pattern matching
  */
 
+// Import the actual parser directly — pdf-parse/index.js has a debug-mode
+// check (module.parent === null) that tries to load a test PDF on Vercel
+// serverless and crashes. Importing lib/pdf-parse.js skips that.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdfParse = require("pdf-parse");
+const pdfParse = require("pdf-parse/lib/pdf-parse");
 
 export interface InvoiceOCRResult {
   invoice_number?: string;
