@@ -394,7 +394,64 @@ function parseBankStatement(text: string): {
 }
 
 /**
- * Process a document — main entry point
+ * Process a document from a Buffer — used when file is already downloaded
+ */
+export async function processDocumentFromBuffer(
+  buffer: Buffer,
+  fileType: "invoice" | "statement"
+): Promise<OCRResult> {
+  console.log(`[OCR] Processing ${fileType} from buffer (${buffer.length} bytes)`);
+
+  try {
+    const rawText = await extractPDFText(buffer);
+
+    if (!rawText || rawText.trim().length < 10) {
+      return {
+        success: false,
+        data: null,
+        confidence: 0,
+        raw_text: rawText || "[No text extracted from PDF]",
+        file_type: fileType,
+      };
+    }
+
+    console.log(`[OCR] Extracted ${rawText.length} characters of text`);
+
+    if (fileType === "invoice") {
+      const { data, confidence } = parseInvoice(rawText);
+      return {
+        success: confidence > 0,
+        data,
+        confidence,
+        raw_text: rawText.substring(0, 2000),
+        file_type: "invoice",
+      };
+    }
+
+    // Bank statement
+    const { transactions, confidence } = parseBankStatement(rawText);
+    return {
+      success: transactions.length > 0,
+      data: null,
+      transactions,
+      confidence,
+      raw_text: rawText.substring(0, 2000),
+      file_type: "statement",
+    };
+  } catch (error) {
+    console.error("[OCR] Processing error:", error);
+    return {
+      success: false,
+      data: null,
+      confidence: 0,
+      raw_text: `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      file_type: fileType,
+    };
+  }
+}
+
+/**
+ * Process a document — main entry point (downloads from URL)
  */
 export async function processDocument(
   fileUrl: string,

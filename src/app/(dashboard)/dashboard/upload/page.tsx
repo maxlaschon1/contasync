@@ -204,9 +204,7 @@ export default function UploadPage() {
 
       if (uploadError) throw new Error(uploadError.message);
 
-      const { data: { publicUrl } } = supabase.storage
-        .from("documents")
-        .getPublicUrl(uploadData.path);
+      const storagePath = uploadData.path;
 
       // Create statement record
       const formData = new FormData();
@@ -214,7 +212,7 @@ export default function UploadPage() {
       formData.set("period_id", period.id);
       formData.set("bank_account_id", selectedAccount);
       formData.set("file_name", file.name);
-      formData.set("file_url", publicUrl);
+      formData.set("file_url", storagePath);
       formData.set("file_size", String(file.size));
 
       const result = await uploadStatement(formData);
@@ -231,7 +229,7 @@ export default function UploadPage() {
       const ocrRes = await fetch("/api/ocr/process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileUrl: publicUrl, fileType: "statement" }),
+        body: JSON.stringify({ storagePath, fileType: "statement" }),
       });
 
       const ocrResult = await ocrRes.json();
@@ -306,9 +304,7 @@ export default function UploadPage() {
 
       if (uploadError) throw new Error(uploadError.message);
 
-      const { data: { publicUrl } } = supabase.storage
-        .from("documents")
-        .getPublicUrl(uploadData.path);
+      const invoiceStoragePath = uploadData.path;
 
       // Run OCR on the invoice if it's a PDF
       let ocrData: DetectedTransaction["ocrData"] = undefined;
@@ -317,7 +313,7 @@ export default function UploadPage() {
           const ocrRes = await fetch("/api/ocr/process", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ fileUrl: publicUrl, fileType: "invoice" }),
+            body: JSON.stringify({ storagePath: invoiceStoragePath, fileType: "invoice" }),
           });
           const ocrResult = await ocrRes.json();
           if (ocrResult.success && ocrResult.data) {
@@ -347,7 +343,7 @@ export default function UploadPage() {
       invoiceFormData.set("amount_without_vat", String(amountWithoutVat));
       invoiceFormData.set("currency", tx.currency);
       invoiceFormData.set("file_name", file.name);
-      invoiceFormData.set("file_url", publicUrl);
+      invoiceFormData.set("file_url", invoiceStoragePath);
 
       const result = await uploadInvoice(invoiceFormData);
 
@@ -403,14 +399,10 @@ export default function UploadPage() {
         return;
       }
 
-      const { data: { publicUrl } } = supabase.storage
-        .from("documents")
-        .getPublicUrl(tempUpload.path);
-
       const res = await fetch("/api/ocr/process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileUrl: publicUrl, fileType: "invoice" }),
+        body: JSON.stringify({ storagePath: tempUpload.path, fileType: "invoice" }),
       });
 
       const result = await res.json();
@@ -458,11 +450,7 @@ export default function UploadPage() {
 
         if (uploadError) throw new Error(uploadError.message);
 
-        const { data: { publicUrl } } = supabase.storage
-          .from("documents")
-          .getPublicUrl(uploadData.path);
-
-        fileUrl = publicUrl;
+        fileUrl = uploadData.path;
         fileName = file.name;
       }
 
