@@ -305,95 +305,117 @@ function parseInvoice(text: string): {
 }
 
 /**
- * Parse a Romanian bank statement from extracted text
+ * Parse a bank statement — supports ING multi-line format
+ *
+ * ING structure per transaction block:
+ *   Line 0: Date (dd.mm.yyyy)
+ *   Line 1: Bank reference number (e.g. "1064")
+ *   Line 2: COUNTERPARTY NAME  ← this is what we extract
+ *   Lines 3+: details (IBAN, bank, description...)
+ *   Last meaningful line: amounts concatenated  e.g. "-1,545.85123,683.10"
+ *     First number = transaction amount (negative = debit)
+ *     Second number = balance after transaction
+ *
+ * Filters out: CONTRIBUTII, Bugetul de Stat, Service Fee, Comision, Dobanda
  */
 function parseBankStatement(text: string): {
   transactions: BankTransactionResult[];
   confidence: number;
 } {
-  const transactions: BankTransactionResult[] = [];
   const lines = text
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
 
-  // Pattern: date + description + amount
-  const transactionPattern =
-    /(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s+(.+?)\s+([-+]?\d[\d.,]*\d)\s*(RON|EUR|USD|LEI)?/i;
+  // ING format: date on its own line (dd.mm.yyyy)
+  const dateLineRegex = /^(\d{2})\.(\d{2})\.(\d{4})$/;
 
-  for (const line of lines) {
-    const match = line.match(transactionPattern);
-    if (match) {
-      const dateParts = match[1].match(
-        /(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})/
-      );
-      if (!dateParts) continue;
-
-      let year = dateParts[3];
-      if (year.length === 2) year = `20${year}`;
-
-      const date = `${year}-${dateParts[2].padStart(2, "0")}-${dateParts[1].padStart(2, "0")}`;
-      const description = match[2].trim();
-      const rawAmount = parseRomanianNumber(match[3]);
-      const currency = match[4]?.toUpperCase() || "RON";
-
-      if (rawAmount !== 0) {
-        transactions.push({
-          date,
-          description,
-          amount: Math.abs(rawAmount),
-          type:
-            rawAmount < 0 || match[3].startsWith("-") ? "debit" : "credit",
-          currency: currency === "LEI" ? "RON" : currency,
-        });
-      }
+  // Find all transaction block start positions
+  const blockStarts: { index: number; date: string }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(dateLineRegex);
+    if (m) {
+      blockStarts.push({
+        index: i,
+        date: `${m[3]}-${m[2]}-${m[1]}`,
+      });
     }
   }
 
-  // Fallback: table pattern (date | desc | debit | credit)
-  if (transactions.length === 0) {
-    const tablePattern =
-      /(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\s+(.+?)\s+(\d[\d.,]*\d)?\s+(\d[\d.,]*\d)?$/;
+  console.log(`[OCR] Found ${blockStarts.length} date blocks in statement`);
 
-    for (const line of lines) {
-      const match = line.match(tablePattern);
-      if (match && (match[3] || match[4])) {
-        const dateParts = match[1].match(
-          /(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})/
-        );
-        if (!dateParts) continue;
+  const transactions: BankTransactionResult[] = [];
 
-        let year = dateParts[3];
-        if (year.length === 2) year = `20${year}`;
+  // ING amount regex: international format (comma=thousands, dot=decimal)
+  // Matches: -1,545.85  or  10,062.20  or  473.81  or  29,558.65
+  const ingAmountRegex = /(-?\d{1,3}(?:,\d{3})*\.\d{2})/g;
 
-        const date = `${year}-${dateParts[2].padStart(2, "0")}-${dateParts[1].padStart(2, "0")}`;
-        const description = match[2].trim();
+  for (let b = 0; b < blockStarts.length; b++) {
+    const start = blockStarts[b].index;
+    const end =
+      b + 1 < blockStarts.length ? blockStarts[b + 1].index : lines.length;
+    const block = lines.slice(start, end);
 
-        if (match[3]) {
-          transactions.push({
-            date,
-            description,
-            amount: parseRomanianNumber(match[3]),
-            type: "debit",
-            currency: "RON",
-          });
-        }
-        if (match[4]) {
-          transactions.push({
-            date,
-            description,
-            amount: parseRomanianNumber(match[4]),
-            type: "credit",
-            currency: "RON",
-          });
-        }
+    if (block.length < 3) continue;
+
+    const date = blockStarts[b].date;
+
+    // Line 1 = reference number (skip)
+    // Line 2 = counterparty name
+    const counterparty = block[2];
+
+    // Skip if counterparty looks like a header or footer
+    if (!counterparty || /^(Book Date|Bank Reference|Page\s?\d)/i.test(counterparty)) {
+      continue;
+    }
+
+    // Search from the end of the block for the amount line
+    // ING concatenates: txAmount + balanceAfter, e.g. "-1,545.85123,683.10"
+    let txAmount = 0;
+    let found = false;
+
+    for (let i = block.length - 1; i >= 3 && !found; i--) {
+      const matches = [...block[i].matchAll(ingAmountRegex)];
+      if (matches.length >= 2) {
+        // First match = transaction amount, second = balance after
+        txAmount = parseFloat(matches[0][1].replace(/,/g, ""));
+        found = true;
       }
     }
+
+    if (!found) continue;
+
+    transactions.push({
+      date,
+      description: counterparty,
+      amount: Math.abs(txAmount),
+      type: txAmount < 0 ? "debit" : "credit",
+      currency: "RON",
+    });
   }
+
+  // Filter out non-invoice transactions (taxes, contributions, bank fees)
+  const ignorePatterns = [
+    /contributii?\s*asigurat/i,
+    /bugetul?\s*(de\s*)?stat/i,
+    /service\s*fee/i,
+    /comision/i,
+    /dobanda/i,
+    /impozit\s*(pe\s*)?venit/i,
+    /tax\s*on\s*interest/i,
+  ];
+
+  const filtered = transactions.filter(
+    (t) => !ignorePatterns.some((p) => p.test(t.description))
+  );
+
+  console.log(
+    `[OCR] Parsed ${transactions.length} total transactions, ${filtered.length} after filtering`
+  );
 
   const confidence =
-    transactions.length > 0 ? Math.min(transactions.length / 5, 1) : 0;
-  return { transactions, confidence };
+    filtered.length > 0 ? Math.min(filtered.length / 5, 1) : 0;
+  return { transactions: filtered, confidence };
 }
 
 /**
