@@ -25,10 +25,17 @@ export async function createInvitation(formData: FormData) {
 
   if (error) return { error: error.message, data: null };
 
+  // Build full invite URL
+  const baseUrl =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    (process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : "http://localhost:3000");
+  const inviteUrl = `${baseUrl}/invite/${data.token}`;
+
   // TODO: Send invitation email via Resend
-  console.log(
-    `[EMAIL STUB] Invitation sent to ${email} with token: ${data.token}`
-  );
+  console.log(`[EMAIL STUB] Invitation sent to ${email}`);
+  console.log(`[EMAIL STUB] Invite link: ${inviteUrl}`);
 
   return { data, error: null };
 }

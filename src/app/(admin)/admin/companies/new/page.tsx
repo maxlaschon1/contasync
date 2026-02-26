@@ -93,7 +93,7 @@ export default function NewCompanyPage() {
       const invForm = new FormData();
       invForm.set("company_id", result.data!.id);
       invForm.set("email", inviteEmail);
-      invForm.set("role", "owner");
+      invForm.set("role", "editor");
       await createInvitation(invForm);
     }
 
