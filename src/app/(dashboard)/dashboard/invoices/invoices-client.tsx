@@ -13,6 +13,25 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+  TooltipProvider,
+} from "@/components/ui/tooltip";
+import { Eye, Download, Trash2, Loader2 } from "lucide-react";
+import { toast } from "sonner";
+import { createClient } from "@/lib/supabase/client";
+import { deleteInvoice } from "@/lib/actions/invoices";
+import { useRouter } from "next/navigation";
 
 type FilterType = "all" | "received" | "issued";
 
@@ -38,7 +57,53 @@ export function InvoicesClient({
   subtitle,
   notificationCount,
 }: InvoicesClientProps) {
+  const router = useRouter();
   const [filter, setFilter] = useState<FilterType>("all");
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // Generate a signed URL and open/download the PDF
+  async function handleFileAction(fileUrl: string, fileName: string, action: "view" | "download") {
+    if (!fileUrl) return;
+
+    const supabase = createClient();
+    const { data, error } = await supabase.storage
+      .from("documents")
+      .createSignedUrl(fileUrl, 300); // 5 min expiry
+
+    if (error || !data?.signedUrl) {
+      toast.error("Nu s-a putut genera link-ul. Incearca din nou.");
+      return;
+    }
+
+    if (action === "view") {
+      window.open(data.signedUrl, "_blank");
+    } else {
+      // Download: create a temporary link and click it
+      const a = document.createElement("a");
+      a.href = data.signedUrl;
+      a.download = fileName || "factura.pdf";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+  }
+
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+
+    const result = await deleteInvoice(deleteTarget.id);
+    if (result.error) {
+      toast.error(`Eroare: ${result.error}`);
+    } else {
+      toast.success("Factura stearsa");
+      router.refresh();
+    }
+
+    setDeleting(false);
+    setDeleteTarget(null);
+  }
 
   const filteredInvoices =
     filter === "all"
@@ -75,7 +140,7 @@ export function InvoicesClient({
   );
 
   return (
-    <>
+    <TooltipProvider delayDuration={200}>
       <DashboardHeader
         title="Facturi"
         subtitle={subtitle}
@@ -97,11 +162,16 @@ export function InvoicesClient({
                   <TableHead className="text-right">TVA</TableHead>
                   <TableHead>Data</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actiuni</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredInvoices.map((invoice) => {
                   const status = statusConfig[invoice.status as string] || statusConfig.pending;
+                  const fileUrl = invoice.file_url as string;
+                  const fileName = invoice.file_name as string;
+                  const hasFile = fileUrl && fileUrl.length > 0 && fileName !== "[eFactura]";
+
                   return (
                     <TableRow key={invoice.id as string}>
                       <TableCell className="font-medium">
@@ -142,12 +212,88 @@ export function InvoicesClient({
                       <TableCell>
                         <StatusBadge label={status.label} variant={status.variant} />
                       </TableCell>
+                      <TableCell>
+                        <div className="flex items-center justify-end gap-1">
+                          {hasFile ? (
+                            <>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={() => handleFileAction(fileUrl, fileName, "view")}
+                                    className="p-1.5 rounded-md text-muted-foreground hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                                  >
+                                    <Eye className="size-4" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Vezi PDF</TooltipContent>
+                              </Tooltip>
+
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={() => handleFileAction(fileUrl, fileName, "download")}
+                                    className="p-1.5 rounded-md text-muted-foreground hover:text-emerald-600 hover:bg-emerald-50 transition-colors"
+                                  >
+                                    <Download className="size-4" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Descarca</TooltipContent>
+                              </Tooltip>
+                            </>
+                          ) : (
+                            <>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    disabled
+                                    className="p-1.5 rounded-md text-muted-foreground/30 cursor-not-allowed"
+                                  >
+                                    <Eye className="size-4" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  {fileName === "[eFactura]" ? "eFactura - fara fisier" : "Fara fisier"}
+                                </TooltipContent>
+                              </Tooltip>
+
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    disabled
+                                    className="p-1.5 rounded-md text-muted-foreground/30 cursor-not-allowed"
+                                  >
+                                    <Download className="size-4" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  {fileName === "[eFactura]" ? "eFactura - fara fisier" : "Fara fisier"}
+                                </TooltipContent>
+                              </Tooltip>
+                            </>
+                          )}
+
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                onClick={() => setDeleteTarget({
+                                  id: invoice.id as string,
+                                  name: (invoice.partner_name as string) || (invoice.invoice_number as string) || "Factura",
+                                })}
+                                className="p-1.5 rounded-md text-muted-foreground hover:text-red-600 hover:bg-red-50 transition-colors"
+                              >
+                                <Trash2 className="size-4" />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent>Sterge</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </TableCell>
                     </TableRow>
                   );
                 })}
                 {filteredInvoices.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                       Nu exista facturi pentru filtrul selectat.
                     </TableCell>
                   </TableRow>
@@ -157,6 +303,36 @@ export function InvoicesClient({
           </CardContent>
         </Card>
       </div>
-    </>
+
+      {/* Delete confirmation dialog */}
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Sterge factura?</DialogTitle>
+            <DialogDescription>
+              Esti sigur ca vrei sa stergi factura &quot;{deleteTarget?.name}&quot;?
+              Aceasta actiune nu poate fi anulata.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setDeleteTarget(null)}
+              disabled={deleting}
+            >
+              Anuleaza
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={deleting}
+            >
+              {deleting && <Loader2 className="size-4 animate-spin mr-2" />}
+              Sterge definitiv
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </TooltipProvider>
   );
 }
