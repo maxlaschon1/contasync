@@ -29,12 +29,14 @@ const statusConfig = {
 };
 
 export default async function DashboardPage() {
-  const profile = await getProfile();
-  if (!profile) redirect("/login");
-
-  // Get user's company
+  // Auth is checked in layout — getProfile now always returns data for authenticated users
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const profile = await getProfile();
+
+  // Get user's company
   const { data: companyUser } = await supabase
     .from("company_users")
     .select("company_id, companies(*)")
@@ -48,7 +50,7 @@ export default async function DashboardPage() {
       <>
         <DashboardHeader
           title="Dashboard"
-          userName={profile.full_name || "Client"}
+          userName={profile?.full_name || user.user_metadata?.full_name || "Client"}
         />
         <div className="p-4 lg:p-6">
           <Card className="border border-border shadow-none">
@@ -121,7 +123,7 @@ export default async function DashboardPage() {
       <DashboardHeader
         title="Dashboard"
         subtitle={subtitle}
-        userName={profile.full_name || "Client"}
+        userName={profile?.full_name || user.user_metadata?.full_name || "Client"}
         notificationCount={unreadCount}
       />
 

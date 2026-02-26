@@ -73,13 +73,40 @@ export async function getProfile() {
   } = await supabase.auth.getUser();
   if (!user) return null;
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("profiles")
     .select("*")
     .eq("id", user.id)
     .single();
 
-  return data;
+  if (data) return data;
+
+  // Profile row doesn't exist — auto-create from auth metadata
+  // (handles signup before schema was applied or trigger didn't fire)
+  if (error && error.code === "PGRST116") {
+    const { data: newProfile } = await supabase
+      .from("profiles")
+      .insert({
+        id: user.id,
+        full_name: user.user_metadata?.full_name || "",
+        role: user.user_metadata?.role || "client",
+      })
+      .select()
+      .single();
+    return newProfile;
+  }
+
+  // Table doesn't exist or other DB error — return a fallback profile
+  // so the app doesn't crash with redirect loops
+  return {
+    id: user.id,
+    full_name: user.user_metadata?.full_name || "",
+    role: user.user_metadata?.role || "client",
+    phone: null,
+    avatar_url: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
 }
 
 export async function updateProfile(formData: FormData) {

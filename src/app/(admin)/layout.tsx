@@ -1,5 +1,6 @@
 import { Sidebar } from "@/components/contasync/Sidebar";
 import { getProfile } from "@/lib/actions/auth";
+import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 
 export default async function AdminLayout({
@@ -7,6 +8,13 @@ export default async function AdminLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // Check auth directly — never rely solely on getProfile for auth decisions
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
   const profile = await getProfile();
   if (!profile || profile.role !== "admin") {
     redirect("/dashboard");

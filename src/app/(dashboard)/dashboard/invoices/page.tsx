@@ -12,12 +12,12 @@ const MONTHS_RO = [
 ];
 
 export default async function InvoicesPage() {
-  const profile = await getProfile();
-  if (!profile) redirect("/login");
-
-  // Get user's company
+  // Auth is checked in layout — no redirect here to avoid loops
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const profile = await getProfile();
   const { data: companyUser } = await supabase
     .from("company_users")
     .select("company_id, companies(*)")
