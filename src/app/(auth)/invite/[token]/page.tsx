@@ -54,6 +54,13 @@ export default function InvitePage() {
     const supabase = createClient();
     const name = formData.get("name") as string;
     const password = formData.get("password") as string;
+    const confirm = formData.get("confirm") as string;
+
+    if (password !== confirm) {
+      setError("Parolele nu coincid.");
+      setSubmitting(false);
+      return;
+    }
 
     // Sign up user
     const { data: authData, error: authError } = await supabase.auth.signUp({
@@ -68,24 +75,26 @@ export default function InvitePage() {
       return;
     }
 
-    // Accept invitation — manual approach
+    // Accept invitation via server API route (bypasses RLS)
     if (authData.user) {
-      const { data: inv } = await supabase
-        .from("invitations")
-        .select("company_id, role")
-        .eq("token", token)
-        .single();
-
-      if (inv) {
-        await supabase.from("company_users").insert({
-          company_id: inv.company_id,
-          user_id: authData.user.id,
-          role: inv.role,
+      try {
+        const res = await fetch("/api/invitations/accept", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token, userId: authData.user.id }),
         });
-        await supabase
-          .from("invitations")
-          .update({ accepted_at: new Date().toISOString() })
-          .eq("token", token);
+        const result = await res.json();
+        if (!res.ok) {
+          console.error("[INVITE] Accept failed:", result.error);
+          setError(result.error || "Eroare la acceptarea invitației.");
+          setSubmitting(false);
+          return;
+        }
+      } catch (err) {
+        console.error("[INVITE] Network error:", err);
+        setError("Eroare de rețea. Încearcă din nou.");
+        setSubmitting(false);
+        return;
       }
     }
 
