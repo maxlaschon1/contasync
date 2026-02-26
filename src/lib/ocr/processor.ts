@@ -106,18 +106,26 @@ function parseInvoice(text: string): {
     /(?:nr\.?\s*factur[aă]\s*)(\S+)/i,
     /(?:seria?\s+)([A-Z]{1,4})\s*(?:nr\.?\s*)(\d+)/i,
     /(?:FACT|FV|FC|FF|FP)[- ]?(\d{1,10})/i,
-    /(?:invoice\s*(?:no\.?|number\.?)\s*)(\S+)/i,
+    // English patterns (OpenAI, Anthropic, Suno, Microsoft)
+    // Handles concatenated format from pdf-parse: "Invoice number6D2TJNFQ 0004"
+    /(?:invoice\s*(?:no\.?|number|#|num)\.?\s*:?\s*)([A-Z0-9][\w-]*(?:\s?\w+)?)/i,
+    /(?:receipt\s*(?:no\.?|number|#)\.?\s*:?\s*)([A-Z0-9][\w-]*(?:\s?\w+)?)/i,
   ];
 
   for (const pattern of invoicePatterns) {
     const match = normalized.match(pattern);
     if (match) {
-      result.invoice_number =
-        match[0].includes("seria") && match[2]
+      let invNum = match[0].includes("seria") && match[2]
           ? `${match[1]}${match[2]}`
           : match[1];
-      matchCount++;
-      break;
+      // Clean up: remove trailing keywords that got captured (e.g., "12345Date" from pdf-parse concatenation)
+      invNum = invNum.replace(/(?:Date|Amount|Total|Sold|Bill|Item|Qty).*$/i, '').trim();
+      if (invNum.length >= 3) {
+        result.invoice_number = invNum;
+        matchCount++;
+        break;
+      }
+      // Too short (e.g., "1" from false match) — try next pattern
     }
   }
 
@@ -158,6 +166,7 @@ function parseInvoice(text: string): {
   }
 
   // 4. Dates
+  // Romanian keyword-based date patterns (DD.MM.YYYY)
   const issueDatePatterns = [
     /(?:data\s*(?:facturii|emiterii|emisiunii|emit))[\s:]*(\d{1,2}[./-]\d{1,2}[./-]\d{4})/i,
     /(?:dat[aă])[\s:]*(\d{1,2}[./-]\d{1,2}[./-]\d{4})/i,
@@ -175,7 +184,63 @@ function parseInvoice(text: string): {
     }
   }
 
-  // Fallback: first date found
+  // English keyword-based date patterns: "Date: January 13, 2026" or "Date: 01/13/2026"
+  if (!result.issue_date) {
+    const MONTH_NAMES: Record<string, string> = {
+      january: "01", february: "02", march: "03", april: "04",
+      may: "05", june: "06", july: "07", august: "08",
+      september: "09", october: "10", november: "11", december: "12",
+      jan: "01", feb: "02", mar: "03", apr: "04",
+      jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
+    };
+
+    // "Date: January 13, 2026" or "Invoice Date: Jan 1, 2026"
+    // Also handles pdf-parse concatenation: "Date of issueJanuary 7, 2026"
+    const englishDatePatterns = [
+      /(?:date\s*(?:of\s*)?issue|invoice\s*date|billing\s*date|date\s*due|date)[\s:]*(\w+)\s+(\d{1,2}),?\s*(\d{4})/i,
+      /(?:date\s*(?:of\s*)?issue|invoice\s*date|billing\s*date|date)[\s:]*(\d{1,2})[/-](\d{1,2})[/-](\d{4})/i,
+    ];
+
+    for (const pattern of englishDatePatterns) {
+      const match = normalized.match(pattern);
+      if (match) {
+        const monthStr = match[1].toLowerCase();
+        if (MONTH_NAMES[monthStr]) {
+          // "January 13, 2026" format
+          result.issue_date = `${match[3]}-${MONTH_NAMES[monthStr]}-${match[2].padStart(2, "0")}`;
+          matchCount++;
+          break;
+        } else if (/^\d{1,2}$/.test(match[1])) {
+          // MM/DD/YYYY format (English invoices use month-first)
+          const month = match[1].padStart(2, "0");
+          const day = match[2].padStart(2, "0");
+          if (parseInt(month) <= 12 && parseInt(day) <= 31) {
+            result.issue_date = `${match[3]}-${month}-${day}`;
+            matchCount++;
+            break;
+          }
+        }
+      }
+    }
+
+    // Fallback: "Month DD, YYYY" anywhere in text (not behind a keyword)
+    if (!result.issue_date) {
+      const monthRegex = new RegExp(
+        `\\b(${Object.keys(MONTH_NAMES).join("|")})\\s+(\\d{1,2}),?\\s*(\\d{4})\\b`,
+        "i"
+      );
+      const monthMatch = normalized.match(monthRegex);
+      if (monthMatch) {
+        const m = MONTH_NAMES[monthMatch[1].toLowerCase()];
+        if (m) {
+          result.issue_date = `${monthMatch[3]}-${m}-${monthMatch[2].padStart(2, "0")}`;
+          matchCount++;
+        }
+      }
+    }
+  }
+
+  // Fallback: first DD.MM.YYYY or DD/MM/YYYY date found
   if (!result.issue_date) {
     const dateMatch = normalized.match(
       /(\d{1,2})[./-](\d{1,2})[./-](\d{4})/
@@ -209,11 +274,22 @@ function parseInvoice(text: string): {
   }
 
   // 5. Amounts
-  // Total amount
+  // Total amount (Romanian + English patterns)
   const totalPatterns = [
+    // Romanian patterns
     /(?:total\s*(?:general|de\s*plat[aă]|factur[aă])?)[\s:]*(\d[\d.,]*\d)\s*(?:RON|LEI|EUR|USD)?/i,
     /(?:de\s*plat[aă]|total)[\s:]*(\d[\d.,]*\d)/i,
     /(?:TOTAL)[\s:]*(\d[\d.,]*\d)/,
+    // English patterns (OpenAI, Anthropic, Suno, Microsoft, etc.)
+    // Handles: "Amount due€90.00" or "Amount due$20.00 USD" (pdf-parse concatenation)
+    /(?:amount\s*due|total\s*(?:amount|due|charged)|balance\s*due)(?:\s*\([A-Z]{3}\))?\s*[$€£]?\s*(\d[\d.,]*\d)/i,
+    /(?:charged|payment\s*amount)[\s:]*[$€£]?\s*(\d[\d.,]*\d)/i,
+    // "Total Amount (GBP)\n22.99" — Microsoft format with currency code in parens
+    /(?:total\s*amount)\s*\([A-Z]{3}\)\s*(\d[\d.,]*\d)/i,
+    // Currency symbol before amount: "$20.00", "€90.00"
+    /(?:total|amount|charged|due)[\s:]*[$€£]\s*(\d[\d.,]*\d)/i,
+    // Subtotal or Total with currency symbol (Stripe format)
+    /(?:subtotal|total)[$€£]\s*(\d[\d.,]*\d)/i,
   ];
 
   for (const pattern of totalPatterns) {
@@ -275,10 +351,12 @@ function parseInvoice(text: string): {
   }
 
   // 6. Currency
-  if (/EUR/i.test(normalized)) {
+  if (/EUR|€/i.test(normalized)) {
     result.currency = "EUR";
-  } else if (/USD|\$/i.test(normalized)) {
+  } else if (/USD|\$(?!\d*\.\d+\.\d)/i.test(normalized)) {
     result.currency = "USD";
+  } else if (/GBP|£/i.test(normalized)) {
+    result.currency = "GBP";
   } else {
     result.currency = "RON";
   }

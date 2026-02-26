@@ -543,6 +543,7 @@ export default function UploadPage() {
         const result = await uploadInvoice(invoiceFormData);
 
         if (result.error) {
+          console.error("[Upload] uploadInvoice error:", result.error);
           setDetectedTransactions((prev) =>
             prev.map((t) =>
               t.id === txId
@@ -550,7 +551,7 @@ export default function UploadPage() {
                 : t
             )
           );
-          toast.error("Eroare la incarcarea facturii");
+          toast.error(`Eroare: ${result.error}`);
           return;
         }
 
@@ -784,13 +785,69 @@ export default function UploadPage() {
           const globalIdx = i + batchIdx;
           bulkFilesRef.current.set(globalIdx, file);
 
-          // Upload to storage
-          const filePath = `${company.id}/${selectedYear}/${String(selectedMonth).padStart(2, "0")}/invoices/${Date.now()}_${globalIdx}_${file.name}`;
-          const { data: uploadData, error: uploadError } =
-            await supabase.storage.from("documents").upload(filePath, file);
+          try {
+            // Upload to storage
+            const filePath = `${company.id}/${selectedYear}/${String(selectedMonth).padStart(2, "0")}/invoices/${Date.now()}_${globalIdx}_${file.name}`;
+            const { data: uploadData, error: uploadError } =
+              await supabase.storage.from("documents").upload(filePath, file);
 
-          if (uploadError) {
-            console.warn("[Bulk] Upload failed for:", file.name, uploadError.message);
+            if (uploadError) {
+              console.warn("[Bulk] Upload failed for:", file.name, uploadError.message);
+              return {
+                fileIndex: globalIdx,
+                fileName: file.name,
+                storagePath: "",
+                ocrData: null,
+                ocrConfidence: 0,
+                rawText: "",
+              } as ScannedInvoice;
+            }
+
+            // OCR scan
+            let ocrData = null;
+            let ocrConfidence = 0;
+            let rawText = "";
+
+            if (file.name.toLowerCase().endsWith(".pdf")) {
+              try {
+                const ocrRes = await fetch("/api/ocr/process", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    storagePath: uploadData.path,
+                    fileType: "invoice",
+                  }),
+                });
+                let result;
+                try {
+                  const text = await ocrRes.text();
+                  result = text ? JSON.parse(text) : { success: false };
+                } catch {
+                  result = { success: false };
+                }
+                if (result.success && result.data) {
+                  ocrData = result.data;
+                  ocrConfidence = result.confidence || 0;
+                }
+                // Always capture raw text for name matching
+                if (result.raw_text) {
+                  rawText = result.raw_text;
+                }
+              } catch {
+                // OCR failed for this file
+              }
+            }
+
+            return {
+              fileIndex: globalIdx,
+              fileName: file.name,
+              storagePath: uploadData.path,
+              ocrData,
+              ocrConfidence,
+              rawText,
+            } as ScannedInvoice;
+          } catch (err) {
+            console.error("[Bulk] Error processing file:", file.name, err);
             return {
               fileIndex: globalIdx,
               fileName: file.name,
@@ -800,50 +857,6 @@ export default function UploadPage() {
               rawText: "",
             } as ScannedInvoice;
           }
-
-          // OCR scan
-          let ocrData = null;
-          let ocrConfidence = 0;
-          let rawText = "";
-
-          if (file.name.toLowerCase().endsWith(".pdf")) {
-            try {
-              const ocrRes = await fetch("/api/ocr/process", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  storagePath: uploadData.path,
-                  fileType: "invoice",
-                }),
-              });
-              let result;
-              try {
-                const text = await ocrRes.text();
-                result = text ? JSON.parse(text) : { success: false };
-              } catch {
-                result = { success: false };
-              }
-              if (result.success && result.data) {
-                ocrData = result.data;
-                ocrConfidence = result.confidence || 0;
-              }
-              // Always capture raw text for name matching
-              if (result.raw_text) {
-                rawText = result.raw_text;
-              }
-            } catch {
-              // OCR failed for this file
-            }
-          }
-
-          return {
-            fileIndex: globalIdx,
-            fileName: file.name,
-            storagePath: uploadData.path,
-            ocrData,
-            ocrConfidence,
-            rawText,
-          } as ScannedInvoice;
         })
       );
 
@@ -924,6 +937,10 @@ export default function UploadPage() {
                 : t
             )
           );
+        } else {
+          // Upload failed — don't lose the invoice! Show it as unmatched
+          console.error("[Bulk] uploadInvoice failed:", inv.fileName, "->", tx.description, uploadResult.error);
+          unmatched.push(inv);
         }
       } else {
         unmatched.push(result.invoice);
@@ -939,8 +956,11 @@ export default function UploadPage() {
     }
     if (unmatched.length > 0) {
       toast.info(
-        `${unmatched.length} facturi nu au putut fi asociate automat.`
+        `${unmatched.length} facturi necesita asociere manuala.`
       );
+    }
+    if (matchedCount === 0 && unmatched.length === 0 && scanned.length > 0) {
+      toast.warning("Nicio factura nu a fost procesata. Verifica fisierele.");
     }
 
     router.refresh();
