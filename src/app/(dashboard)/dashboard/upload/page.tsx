@@ -802,6 +802,7 @@ export default function UploadPage() {
           // OCR scan
           let ocrData = null;
           let ocrConfidence = 0;
+          let rawText = "";
 
           if (file.name.toLowerCase().endsWith(".pdf")) {
             try {
@@ -824,6 +825,10 @@ export default function UploadPage() {
                 ocrData = result.data;
                 ocrConfidence = result.confidence || 0;
               }
+              // Always capture raw text for name matching
+              if (result.raw_text) {
+                rawText = result.raw_text;
+              }
             } catch {
               // OCR failed for this file
             }
@@ -835,6 +840,7 @@ export default function UploadPage() {
             storagePath: uploadData.path,
             ocrData,
             ocrConfidence,
+            rawText,
           } as ScannedInvoice;
         })
       );
@@ -846,10 +852,11 @@ export default function UploadPage() {
       });
     }
 
-    // Run matching algorithm
+    // Run matching algorithm (pass company name to filter out own-company false matches)
     const matchResults = matchInvoicesToTransactions(
       scanned,
-      detectedTransactions
+      detectedTransactions,
+      company.name
     );
 
     // Process matched pairs: create invoice records

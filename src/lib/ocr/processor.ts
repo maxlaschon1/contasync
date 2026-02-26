@@ -123,9 +123,14 @@ function parseInvoice(text: string): {
 
   // 2. Partner name (company names with SRL, SA, etc.)
   const companyPatterns = [
-    /(?:furnizor|client|cumpar[aă]tor|beneficiar|emitent|prestator)[\s:]*([A-Z][A-Za-zĂăÂâÎîȘșȚț\s.,-]+(?:S\.?R\.?L\.?|S\.?A\.?|S\.?C\.?A\.?|P\.?F\.?A\.?|I\.?I\.?|I\.?F\.?))/i,
+    // Romanian keyword-based patterns
+    /(?:furnizor|client|cumpar[aă]tor|beneficiar|emitent|prestator|vanzator|v[aâ]nz[aă]tor)[\s:]*([A-Z][A-Za-zĂăÂâÎîȘșȚț\s.,-]+(?:S\.?R\.?L\.?|S\.?A\.?|S\.?C\.?A\.?|P\.?F\.?A\.?|I\.?I\.?|I\.?F\.?N?\.?))/i,
+    // English company suffixes (LLC, Ltd, Inc, PBC, etc.)
+    /\b([A-Z][A-Za-z\s.,'-]+?(?:LLC|Ltd\.?|Limited|Inc\.?|Incorporated|PBC|Corp\.?|Corporation|GmbH|BV|NV|AG|LP|LLP))\b/,
+    // Romanian S.C. prefix
     /\b(S\.?C\.?\s+[A-Z][A-Z\s.]+(?:S\.?R\.?L\.?|S\.?A\.?))\b/,
-    /\b([A-Z][A-Z\s.]{2,30}(?:S\.?R\.?L\.?|S\.?A\.?|P\.?F\.?A\.?))\b/,
+    // Romanian suffix without prefix
+    /\b([A-Z][A-Z\s.]{2,30}(?:S\.?R\.?L\.?|S\.?A\.?|P\.?F\.?A\.?|I\.?F\.?N\.?\s*S\.?A\.?))\b/,
   ];
 
   for (const pattern of companyPatterns) {
