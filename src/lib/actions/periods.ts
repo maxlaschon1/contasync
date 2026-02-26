@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { createServiceClient } from "@/lib/supabase/service";
 
 export async function getCurrentPeriod(companyId: string) {
   const supabase = await createClient();
@@ -15,14 +16,45 @@ export async function getCurrentPeriod(companyId: string) {
     .single();
 
   if (error && error.code === "PGRST116") {
-    // No period exists, create one
-    const { data: newPeriod } = await supabase
+    // No period exists, create one using service role (clients only have SELECT)
+    const serviceClient = createServiceClient();
+    const { data: newPeriod } = await serviceClient
       .from("monthly_periods")
       .insert({
         company_id: companyId,
         year: now.getFullYear(),
         month: now.getMonth() + 1,
       })
+      .select()
+      .single();
+    return { data: newPeriod, error: null };
+  }
+
+  if (error) return { error: error.message, data: null };
+  return { data, error: null };
+}
+
+export async function getOrCreatePeriod(
+  companyId: string,
+  year: number,
+  month: number
+) {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("monthly_periods")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("year", year)
+    .eq("month", month)
+    .single();
+
+  if (error && error.code === "PGRST116") {
+    // No period exists, create one using service role
+    const serviceClient = createServiceClient();
+    const { data: newPeriod } = await serviceClient
+      .from("monthly_periods")
+      .insert({ company_id: companyId, year, month })
       .select()
       .single();
     return { data: newPeriod, error: null };

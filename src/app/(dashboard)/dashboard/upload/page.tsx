@@ -3,10 +3,17 @@
 import { useState, useEffect, useTransition, useCallback } from "react";
 import { DashboardHeader } from "@/components/contasync/DashboardHeader";
 import { FileUpload } from "@/components/contasync/FileUpload";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -14,6 +21,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import {
   FileText,
   Receipt,
@@ -23,13 +38,28 @@ import {
   Upload,
   ArrowRight,
   X,
-  Download,
   AlertCircle,
+  CalendarDays,
+  Trash2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
-import { uploadStatement } from "@/lib/actions/statements";
-import { uploadInvoice } from "@/lib/actions/invoices";
+import {
+  uploadStatement,
+  insertTransactions,
+  deleteTransaction as deleteTransactionAction,
+  deleteStatement as deleteStatementAction,
+} from "@/lib/actions/statements";
+import {
+  uploadInvoice,
+  deleteInvoice as deleteInvoiceAction,
+} from "@/lib/actions/invoices";
+import { getOrCreatePeriod } from "@/lib/actions/periods";
 import { useRouter } from "next/navigation";
+
+// ============================================
+// INTERFACES
+// ============================================
 
 interface BankAccount {
   id: string;
@@ -51,6 +81,7 @@ interface PeriodInfo {
 
 interface DetectedTransaction {
   id: string;
+  dbId?: string;
   date: string;
   description: string;
   amount: number;
@@ -61,6 +92,9 @@ interface DetectedTransaction {
   invoiceUploaded: boolean;
   invoiceUploading: boolean;
   invoiceId?: string;
+  // eFactura state
+  isEfactura: boolean;
+  efacturaProcessing?: boolean;
   // OCR data from the invoice PDF
   ocrData?: {
     invoice_number?: string;
@@ -72,10 +106,31 @@ interface DetectedTransaction {
   ocrProcessing?: boolean;
 }
 
+// ============================================
+// CONSTANTS
+// ============================================
+
 const MONTHS_RO = [
-  "Ianuarie", "Februarie", "Martie", "Aprilie", "Mai", "Iunie",
-  "Iulie", "August", "Septembrie", "Octombrie", "Noiembrie", "Decembrie",
+  "Ianuarie",
+  "Februarie",
+  "Martie",
+  "Aprilie",
+  "Mai",
+  "Iunie",
+  "Iulie",
+  "August",
+  "Septembrie",
+  "Octombrie",
+  "Noiembrie",
+  "Decembrie",
 ];
+
+const currentYear = new Date().getFullYear();
+const YEARS = [currentYear - 2, currentYear - 1, currentYear];
+
+// ============================================
+// COMPONENT
+// ============================================
 
 export default function UploadPage() {
   const router = useRouter();
@@ -88,6 +143,13 @@ export default function UploadPage() {
   const [userName, setUserName] = useState("Client");
   const [loading, setLoading] = useState(true);
 
+  // Period selector
+  const [selectedMonth, setSelectedMonth] = useState(
+    new Date().getMonth() + 1
+  );
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [periodLoading, setPeriodLoading] = useState(false);
+
   // Step tracking
   const [step, setStep] = useState<1 | 2>(1);
 
@@ -99,12 +161,24 @@ export default function UploadPage() {
   const [ocrStatus, setOcrStatus] = useState("");
 
   // Step 2: Detected transactions / invoices
-  const [detectedTransactions, setDetectedTransactions] = useState<DetectedTransaction[]>([]);
+  const [detectedTransactions, setDetectedTransactions] = useState<
+    DetectedTransaction[]
+  >([]);
   const [allUploaded, setAllUploaded] = useState(false);
+  const [currentStatementId, setCurrentStatementId] = useState<string | null>(
+    null
+  );
+
+  // Delete statement dialog
+  const [showDeleteStatementDialog, setShowDeleteStatementDialog] =
+    useState(false);
+  const [deletingStatement, setDeletingStatement] = useState(false);
 
   // Manual invoice add
   const [showManualAdd, setShowManualAdd] = useState(false);
-  const [manualType, setManualType] = useState<"received" | "issued">("received");
+  const [manualType, setManualType] = useState<"received" | "issued">(
+    "received"
+  );
   const [manualNumber, setManualNumber] = useState("");
   const [manualPartner, setManualPartner] = useState("");
   const [manualCui, setManualCui] = useState("");
@@ -117,12 +191,16 @@ export default function UploadPage() {
   const [manualOcrProcessing, setManualOcrProcessing] = useState(false);
   const [manualOcrStatus, setManualOcrStatus] = useState("");
 
-  // Fetch initial data on mount
+  // ============================================
+  // LOAD DATA ON MOUNT
+  // ============================================
   useEffect(() => {
     async function loadData() {
       const supabase = createClient();
 
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) return;
 
       // Get profile
@@ -155,16 +233,14 @@ export default function UploadPage() {
 
         // Get or create current period
         const now = new Date();
-        const { data: existingPeriod } = await supabase
-          .from("monthly_periods")
-          .select("id, month, year")
-          .eq("company_id", comp.id)
-          .eq("year", now.getFullYear())
-          .eq("month", now.getMonth() + 1)
-          .single();
+        const month = now.getMonth() + 1;
+        const year = now.getFullYear();
+        setSelectedMonth(month);
+        setSelectedYear(year);
 
-        if (existingPeriod) {
-          setPeriod(existingPeriod);
+        const periodResult = await getOrCreatePeriod(comp.id, year, month);
+        if (periodResult.data) {
+          setPeriod(periodResult.data);
         }
       }
 
@@ -176,16 +252,42 @@ export default function UploadPage() {
   // Check if all transactions have invoices uploaded
   useEffect(() => {
     if (detectedTransactions.length > 0) {
-      const all = detectedTransactions.every(t => t.invoiceUploaded);
+      const all = detectedTransactions.every((t) => t.invoiceUploaded);
       setAllUploaded(all);
     }
   }, [detectedTransactions]);
 
   // ============================================
+  // PERIOD SELECTOR
+  // ============================================
+  async function handlePeriodChange(month: number, year: number) {
+    setSelectedMonth(month);
+    setSelectedYear(year);
+
+    if (!company) return;
+
+    setPeriodLoading(true);
+    const result = await getOrCreatePeriod(company.id, year, month);
+    if (result.data) {
+      setPeriod(result.data);
+    }
+    setPeriodLoading(false);
+
+    // Reset upload state when period changes
+    setStep(1);
+    setDetectedTransactions([]);
+    setCurrentStatementId(null);
+    setStatementFiles([]);
+    setOcrStatus("");
+    setStatementError("");
+  }
+
+  // ============================================
   // STEP 1: Upload statement + OCR extract transactions
   // ============================================
   async function handleStatementUpload() {
-    if (!selectedAccount || statementFiles.length === 0 || !company || !period) return;
+    if (!selectedAccount || statementFiles.length === 0 || !company || !period)
+      return;
 
     setStatementUploading(true);
     setStatementError("");
@@ -196,8 +298,7 @@ export default function UploadPage() {
       const supabase = createClient();
 
       // Upload file to storage
-      const now = new Date();
-      const filePath = `${company.id}/${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/statements/${Date.now()}_${file.name}`;
+      const filePath = `${company.id}/${selectedYear}/${String(selectedMonth).padStart(2, "0")}/statements/${Date.now()}_${file.name}`;
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from("documents")
         .upload(filePath, file);
@@ -223,6 +324,8 @@ export default function UploadPage() {
         return;
       }
 
+      setCurrentStatementId(result.data.id);
+
       // Now run OCR on the uploaded statement
       setOcrStatus("AI citeste extrasul de cont...");
 
@@ -237,28 +340,54 @@ export default function UploadPage() {
         const text = await ocrRes.text();
         ocrResult = text ? JSON.parse(text) : { success: false };
       } catch {
-        console.error("[OCR] Failed to parse response, status:", ocrRes.status);
+        console.error(
+          "[OCR] Failed to parse response, status:",
+          ocrRes.status
+        );
         ocrResult = { success: false };
       }
 
-      if (ocrResult.success && ocrResult.transactions && ocrResult.transactions.length > 0) {
-        // Save transactions to DB
-        const transactionsToInsert = ocrResult.transactions.map((t: { date: string; description: string; amount: number; type: string; currency: string }) => ({
-          statement_id: result.data.id,
-          company_id: company.id,
-          transaction_date: t.date,
-          description: t.description,
-          amount: t.amount,
-          type: t.type,
-          currency: t.currency,
-        }));
+      if (
+        ocrResult.success &&
+        ocrResult.transactions &&
+        ocrResult.transactions.length > 0
+      ) {
+        // Save transactions to DB using server action (service role)
+        const transactionsToInsert = ocrResult.transactions.map(
+          (t: {
+            date: string;
+            description: string;
+            amount: number;
+            type: string;
+            currency: string;
+          }) => ({
+            statement_id: result.data.id,
+            company_id: company.id,
+            transaction_date: t.date,
+            description: t.description,
+            amount: t.amount,
+            type: t.type,
+            currency: t.currency,
+          })
+        );
 
-        await supabase.from("bank_transactions").insert(transactionsToInsert);
+        const insertResult = await insertTransactions(transactionsToInsert);
+        const dbIds = insertResult.data || [];
 
-        // Create detected transactions for UI
+        // Create detected transactions for UI with real DB IDs
         const detected: DetectedTransaction[] = ocrResult.transactions.map(
-          (t: { date: string; description: string; amount: number; type: string; currency: string }, i: number) => ({
+          (
+            t: {
+              date: string;
+              description: string;
+              amount: number;
+              type: string;
+              currency: string;
+            },
+            i: number
+          ) => ({
             id: `tx_${i}`,
+            dbId: dbIds[i]?.id,
             date: t.date,
             description: t.description,
             amount: t.amount,
@@ -266,21 +395,28 @@ export default function UploadPage() {
             currency: t.currency,
             invoiceUploaded: false,
             invoiceUploading: false,
+            isEfactura: false,
           })
         );
 
         setDetectedTransactions(detected);
-        setOcrStatus(`AI a gasit ${detected.length} tranzactii. Incarca facturile corespunzatoare.`);
+        setOcrStatus(
+          `AI a gasit ${detected.length} tranzactii. Incarca facturile corespunzatoare.`
+        );
         setStep(2);
       } else {
-        setOcrStatus("Nu s-au gasit tranzactii in extras. Poti adauga facturi manual.");
+        setOcrStatus(
+          "Nu s-au gasit tranzactii in extras. Poti adauga facturi manual."
+        );
         setDetectedTransactions([]);
         setStep(2);
       }
 
       setStatementUploading(false);
     } catch (err) {
-      setStatementError(err instanceof Error ? err.message : "Eroare la incarcare");
+      setStatementError(
+        err instanceof Error ? err.message : "Eroare la incarcare"
+      );
       setStatementUploading(false);
       setOcrStatus("");
     }
@@ -289,112 +425,325 @@ export default function UploadPage() {
   // ============================================
   // STEP 2: Upload invoice for a detected transaction
   // ============================================
-  const handleTransactionInvoiceUpload = useCallback(async (txId: string, file: File) => {
-    if (!company || !period) return;
+  const handleTransactionInvoiceUpload = useCallback(
+    async (tx: DetectedTransaction, file: File) => {
+      if (!company || !period) return;
 
-    // Mark as uploading
-    setDetectedTransactions(prev =>
-      prev.map(t => t.id === txId ? { ...t, invoiceUploading: true, ocrProcessing: true } : t)
-    );
+      const txId = tx.id;
 
-    try {
-      const supabase = createClient();
-      const tx = detectedTransactions.find(t => t.id === txId);
-      if (!tx) return;
+      // Mark as uploading
+      setDetectedTransactions((prev) =>
+        prev.map((t) =>
+          t.id === txId
+            ? { ...t, invoiceUploading: true, ocrProcessing: true }
+            : t
+        )
+      );
 
-      // Upload invoice file to storage
-      const now = new Date();
-      const filePath = `${company.id}/${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/invoices/${Date.now()}_${file.name}`;
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from("documents")
-        .upload(filePath, file);
+      try {
+        const supabase = createClient();
 
-      if (uploadError) throw new Error(uploadError.message);
+        // Upload invoice file to storage
+        const filePath = `${company.id}/${selectedYear}/${String(selectedMonth).padStart(2, "0")}/invoices/${Date.now()}_${file.name}`;
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from("documents")
+          .upload(filePath, file);
 
-      const invoiceStoragePath = uploadData.path;
+        if (uploadError) throw new Error(uploadError.message);
 
-      // Run OCR on the invoice if it's a PDF
-      let ocrData: DetectedTransaction["ocrData"] = undefined;
-      if (file.name.toLowerCase().endsWith(".pdf")) {
-        try {
-          const ocrRes = await fetch("/api/ocr/process", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ storagePath: invoiceStoragePath, fileType: "invoice" }),
-          });
-          let ocrResult;
+        const invoiceStoragePath = uploadData.path;
+
+        // Run OCR on the invoice if it's a PDF
+        let ocrData: DetectedTransaction["ocrData"] = undefined;
+        if (file.name.toLowerCase().endsWith(".pdf")) {
           try {
-            const text = await ocrRes.text();
-            ocrResult = text ? JSON.parse(text) : { success: false };
+            const ocrRes = await fetch("/api/ocr/process", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                storagePath: invoiceStoragePath,
+                fileType: "invoice",
+              }),
+            });
+            let ocrResult;
+            try {
+              const text = await ocrRes.text();
+              ocrResult = text ? JSON.parse(text) : { success: false };
+            } catch {
+              ocrResult = { success: false };
+            }
+            if (ocrResult.success && ocrResult.data) {
+              ocrData = ocrResult.data;
+            }
           } catch {
-            ocrResult = { success: false };
+            // OCR failed, use transaction data as fallback
           }
-          if (ocrResult.success && ocrResult.data) {
-            ocrData = ocrResult.data;
-          }
-        } catch {
-          // OCR failed, use transaction data as fallback
         }
+
+        // Create invoice record
+        const invoiceFormData = new FormData();
+        invoiceFormData.set("company_id", company.id);
+        invoiceFormData.set("period_id", period.id);
+        invoiceFormData.set(
+          "type",
+          tx.type === "debit" ? "received" : "issued"
+        );
+        invoiceFormData.set(
+          "invoice_number",
+          ocrData?.invoice_number || ""
+        );
+        invoiceFormData.set(
+          "partner_name",
+          ocrData?.partner_name || tx.description
+        );
+        invoiceFormData.set("partner_cui", ocrData?.partner_cui || "");
+        invoiceFormData.set(
+          "issue_date",
+          ocrData?.issue_date || tx.date
+        );
+
+        const totalAmount = ocrData?.total_amount || tx.amount;
+        const vatAmount =
+          Math.round((totalAmount - totalAmount / 1.19) * 100) / 100;
+        const amountWithoutVat =
+          Math.round((totalAmount - vatAmount) * 100) / 100;
+
+        invoiceFormData.set("total_amount", String(totalAmount));
+        invoiceFormData.set("vat_amount", String(vatAmount));
+        invoiceFormData.set("amount_without_vat", String(amountWithoutVat));
+        invoiceFormData.set("currency", tx.currency);
+        invoiceFormData.set("file_name", file.name);
+        invoiceFormData.set("file_url", invoiceStoragePath);
+
+        const result = await uploadInvoice(invoiceFormData);
+
+        if (result.error) {
+          setDetectedTransactions((prev) =>
+            prev.map((t) =>
+              t.id === txId
+                ? { ...t, invoiceUploading: false, ocrProcessing: false }
+                : t
+            )
+          );
+          toast.error("Eroare la incarcarea facturii");
+          return;
+        }
+
+        // Mark as uploaded
+        setDetectedTransactions((prev) =>
+          prev.map((t) =>
+            t.id === txId
+              ? {
+                  ...t,
+                  invoiceUploaded: true,
+                  invoiceUploading: false,
+                  invoiceFile: file,
+                  invoiceId: result.data?.id,
+                  ocrData,
+                  ocrProcessing: false,
+                }
+              : t
+          )
+        );
+
+        toast.success("Factura incarcata");
+        router.refresh();
+      } catch (err) {
+        console.error("[Upload] Error:", err);
+        setDetectedTransactions((prev) =>
+          prev.map((t) =>
+            t.id === txId
+              ? { ...t, invoiceUploading: false, ocrProcessing: false }
+              : t
+          )
+        );
+        toast.error("Eroare la incarcarea facturii");
       }
+    },
+    [company, period, selectedYear, selectedMonth, router]
+  );
 
-      // Create invoice record — use OCR data if available, otherwise transaction data
-      const invoiceFormData = new FormData();
-      invoiceFormData.set("company_id", company.id);
-      invoiceFormData.set("period_id", period.id);
-      invoiceFormData.set("type", tx.type === "debit" ? "received" : "issued");
-      invoiceFormData.set("invoice_number", ocrData?.invoice_number || "");
-      invoiceFormData.set("partner_name", ocrData?.partner_name || tx.description);
-      invoiceFormData.set("partner_cui", ocrData?.partner_cui || "");
-      invoiceFormData.set("issue_date", ocrData?.issue_date || tx.date);
+  // ============================================
+  // DELETE TRANSACTION
+  // ============================================
+  async function handleDeleteTransaction(txId: string) {
+    const tx = detectedTransactions.find((t) => t.id === txId);
+    if (!tx) return;
 
-      const totalAmount = ocrData?.total_amount || tx.amount;
-      const vatAmount = Math.round((totalAmount - totalAmount / 1.19) * 100) / 100;
-      const amountWithoutVat = Math.round((totalAmount - vatAmount) * 100) / 100;
+    // If there was an invoice, delete it first
+    if (tx.invoiceId) {
+      await deleteInvoiceAction(tx.invoiceId);
+    }
 
-      invoiceFormData.set("total_amount", String(totalAmount));
-      invoiceFormData.set("vat_amount", String(vatAmount));
-      invoiceFormData.set("amount_without_vat", String(amountWithoutVat));
-      invoiceFormData.set("currency", tx.currency);
-      invoiceFormData.set("file_name", file.name);
-      invoiceFormData.set("file_url", invoiceStoragePath);
+    // If there's a DB id, delete from DB
+    if (tx.dbId) {
+      const result = await deleteTransactionAction(tx.dbId);
+      if (result.error) {
+        toast.error("Eroare la stergerea tranzactiei");
+        return;
+      }
+    }
 
-      const result = await uploadInvoice(invoiceFormData);
+    // Remove from state
+    setDetectedTransactions((prev) => prev.filter((t) => t.id !== txId));
+    toast.success("Tranzactie stearsa");
+  }
+
+  // ============================================
+  // TOGGLE eFACTURA
+  // ============================================
+  async function handleToggleEfactura(txId: string) {
+    const tx = detectedTransactions.find((t) => t.id === txId);
+    if (!tx || !company || !period) return;
+
+    if (tx.isEfactura) {
+      // Uncheck: delete the efactura invoice
+      if (tx.invoiceId) {
+        setDetectedTransactions((prev) =>
+          prev.map((t) =>
+            t.id === txId ? { ...t, efacturaProcessing: true } : t
+          )
+        );
+
+        await deleteInvoiceAction(tx.invoiceId);
+
+        setDetectedTransactions((prev) =>
+          prev.map((t) =>
+            t.id === txId
+              ? {
+                  ...t,
+                  isEfactura: false,
+                  invoiceUploaded: false,
+                  invoiceId: undefined,
+                  efacturaProcessing: false,
+                }
+              : t
+          )
+        );
+        toast.success("eFactura dezactivat");
+      }
+    } else {
+      // Check: create an efactura invoice
+      setDetectedTransactions((prev) =>
+        prev.map((t) =>
+          t.id === txId ? { ...t, efacturaProcessing: true } : t
+        )
+      );
+
+      const totalAmount = tx.amount;
+      const vatAmount =
+        Math.round((totalAmount - totalAmount / 1.19) * 100) / 100;
+      const amountWithoutVat =
+        Math.round((totalAmount - vatAmount) * 100) / 100;
+
+      const formData = new FormData();
+      formData.set("company_id", company.id);
+      formData.set("period_id", period.id);
+      formData.set("type", tx.type === "debit" ? "received" : "issued");
+      formData.set("partner_name", tx.description);
+      formData.set("issue_date", tx.date);
+      formData.set("total_amount", String(totalAmount));
+      formData.set("vat_amount", String(vatAmount));
+      formData.set("amount_without_vat", String(amountWithoutVat));
+      formData.set("currency", tx.currency);
+      formData.set("is_efactura", "true");
+      formData.set("invoice_number", "");
+      formData.set("partner_cui", "");
+      formData.set("file_name", "");
+      formData.set("file_url", "");
+
+      const result = await uploadInvoice(formData);
 
       if (result.error) {
-        setDetectedTransactions(prev =>
-          prev.map(t => t.id === txId ? { ...t, invoiceUploading: false, ocrProcessing: false } : t)
+        toast.error("Eroare la marcarea eFactura");
+        setDetectedTransactions((prev) =>
+          prev.map((t) =>
+            t.id === txId ? { ...t, efacturaProcessing: false } : t
+          )
         );
         return;
       }
 
-      // Mark as uploaded
-      setDetectedTransactions(prev =>
-        prev.map(t => t.id === txId ? {
-          ...t,
-          invoiceUploaded: true,
-          invoiceUploading: false,
-          invoiceFile: file,
-          invoiceId: result.data?.id,
-          ocrData,
-          ocrProcessing: false,
-        } : t)
+      setDetectedTransactions((prev) =>
+        prev.map((t) =>
+          t.id === txId
+            ? {
+                ...t,
+                isEfactura: true,
+                invoiceUploaded: true,
+                invoiceId: result.data?.id,
+                efacturaProcessing: false,
+              }
+            : t
+        )
       );
-
-      router.refresh();
-    } catch (err) {
-      console.error("[Upload] Error:", err);
-      setDetectedTransactions(prev =>
-        prev.map(t => t.id === txId ? { ...t, invoiceUploading: false, ocrProcessing: false } : t)
-      );
+      toast.success("Marcat ca eFactura");
     }
-  }, [company, period, detectedTransactions, router]);
+  }
+
+  // ============================================
+  // DELETE UPLOADED INVOICE
+  // ============================================
+  async function handleDeleteUploadedInvoice(txId: string) {
+    const tx = detectedTransactions.find((t) => t.id === txId);
+    if (!tx || !tx.invoiceId) return;
+
+    const result = await deleteInvoiceAction(tx.invoiceId);
+    if (result.error) {
+      toast.error("Eroare la stergerea facturii");
+      return;
+    }
+
+    setDetectedTransactions((prev) =>
+      prev.map((t) =>
+        t.id === txId
+          ? {
+              ...t,
+              invoiceUploaded: false,
+              invoiceId: undefined,
+              invoiceFile: undefined,
+              ocrData: undefined,
+              isEfactura: false,
+            }
+          : t
+      )
+    );
+    toast.success("Factura stearsa");
+  }
+
+  // ============================================
+  // DELETE STATEMENT
+  // ============================================
+  async function handleDeleteStatement() {
+    if (!currentStatementId) return;
+
+    setDeletingStatement(true);
+    const result = await deleteStatementAction(currentStatementId);
+
+    if (result.error) {
+      toast.error("Eroare la stergerea extrasului");
+      setDeletingStatement(false);
+      return;
+    }
+
+    // Reset everything
+    setStep(1);
+    setDetectedTransactions([]);
+    setCurrentStatementId(null);
+    setStatementFiles([]);
+    setOcrStatus("");
+    setShowDeleteStatementDialog(false);
+    setDeletingStatement(false);
+    toast.success("Extras de cont sters");
+  }
 
   // ============================================
   // Manual invoice OCR + upload
   // ============================================
   async function processManualInvoiceOCR(files: File[]) {
     setManualFiles(files);
-    if (files.length === 0 || !files[0].name.toLowerCase().endsWith(".pdf")) return;
+    if (files.length === 0 || !files[0].name.toLowerCase().endsWith(".pdf"))
+      return;
 
     setManualOcrProcessing(true);
     setManualOcrStatus("AI citeste factura...");
@@ -415,7 +764,10 @@ export default function UploadPage() {
       const res = await fetch("/api/ocr/process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ storagePath: tempUpload.path, fileType: "invoice" }),
+        body: JSON.stringify({
+          storagePath: tempUpload.path,
+          fileType: "invoice",
+        }),
       });
 
       let result;
@@ -436,7 +788,9 @@ export default function UploadPage() {
         if (d.total_amount) setManualAmount(String(d.total_amount));
 
         const confidence = Math.round((result.confidence || 0) * 100);
-        setManualOcrStatus(`AI a completat automat (${confidence}% incredere)`);
+        setManualOcrStatus(
+          `AI a completat automat (${confidence}% incredere)`
+        );
       } else {
         setManualOcrStatus("Nu s-au putut extrage date. Completeaza manual.");
       }
@@ -461,11 +815,9 @@ export default function UploadPage() {
       if (manualFiles.length > 0) {
         const file = manualFiles[0];
         const supabase = createClient();
-        const now = new Date();
-        const filePath = `${company.id}/${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/invoices/${Date.now()}_${file.name}`;
-        const { data: uploadData, error: uploadError } = await supabase.storage
-          .from("documents")
-          .upload(filePath, file);
+        const filePath = `${company.id}/${selectedYear}/${String(selectedMonth).padStart(2, "0")}/invoices/${Date.now()}_${file.name}`;
+        const { data: uploadData, error: uploadError } =
+          await supabase.storage.from("documents").upload(filePath, file);
 
         if (uploadError) throw new Error(uploadError.message);
 
@@ -474,8 +826,10 @@ export default function UploadPage() {
       }
 
       const totalAmount = parseFloat(manualAmount) || 0;
-      const vatAmount = Math.round((totalAmount - totalAmount / 1.19) * 100) / 100;
-      const amountWithoutVat = Math.round((totalAmount - vatAmount) * 100) / 100;
+      const vatAmount =
+        Math.round((totalAmount - totalAmount / 1.19) * 100) / 100;
+      const amountWithoutVat =
+        Math.round((totalAmount - vatAmount) * 100) / 100;
 
       const formData = new FormData();
       formData.set("company_id", company.id);
@@ -484,7 +838,10 @@ export default function UploadPage() {
       formData.set("invoice_number", manualNumber);
       formData.set("partner_name", manualPartner);
       formData.set("partner_cui", manualCui);
-      formData.set("issue_date", manualDate || new Date().toISOString().split("T")[0]);
+      formData.set(
+        "issue_date",
+        manualDate || new Date().toISOString().split("T")[0]
+      );
       formData.set("amount_without_vat", String(amountWithoutVat));
       formData.set("vat_amount", String(vatAmount));
       formData.set("total_amount", String(totalAmount));
@@ -510,7 +867,9 @@ export default function UploadPage() {
         setManualUploading(false);
       });
     } catch (err) {
-      setManualError(err instanceof Error ? err.message : "Eroare la incarcare");
+      setManualError(
+        err instanceof Error ? err.message : "Eroare la incarcare"
+      );
       setManualUploading(false);
     }
   }
@@ -518,11 +877,6 @@ export default function UploadPage() {
   // ============================================
   // RENDER
   // ============================================
-
-  const now = new Date();
-  const subtitle = period
-    ? `${MONTHS_RO[period.month - 1]} ${period.year}`
-    : `${MONTHS_RO[now.getMonth()]} ${now.getFullYear()}`;
 
   if (loading) {
     return (
@@ -539,20 +893,85 @@ export default function UploadPage() {
     <>
       <DashboardHeader
         title="Incarca documente"
-        subtitle={subtitle}
+        subtitle={`${MONTHS_RO[selectedMonth - 1]} ${selectedYear}`}
         userName={userName}
       />
 
       <div className="p-4 lg:p-6 space-y-6">
+        {/* ==================== PERIOD SELECTOR ==================== */}
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="py-4">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-lg bg-primary/10">
+                  <CalendarDays className="size-5 text-primary" />
+                </div>
+                <span className="text-sm font-medium">Perioada:</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Select
+                  value={String(selectedMonth)}
+                  onValueChange={(v) =>
+                    handlePeriodChange(Number(v), selectedYear)
+                  }
+                >
+                  <SelectTrigger className="w-40 bg-white">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {MONTHS_RO.map((m, i) => (
+                      <SelectItem key={i} value={String(i + 1)}>
+                        {m}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={String(selectedYear)}
+                  onValueChange={(v) =>
+                    handlePeriodChange(selectedMonth, Number(v))
+                  }
+                >
+                  <SelectTrigger className="w-24 bg-white">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {YEARS.map((y) => (
+                      <SelectItem key={y} value={String(y)}>
+                        {y}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {periodLoading && (
+                <Loader2 className="size-4 animate-spin text-muted-foreground" />
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Step indicator */}
         <div className="flex items-center gap-3">
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${step === 1 ? "bg-primary text-primary-foreground" : "bg-emerald-100 text-emerald-700"}`}>
-            {step > 1 ? <CheckCircle2 className="size-4" /> : <span className="size-5 rounded-full bg-white/20 flex items-center justify-center text-xs">1</span>}
+          <div
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${step === 1 ? "bg-primary text-primary-foreground" : "bg-emerald-100 text-emerald-700"}`}
+          >
+            {step > 1 ? (
+              <CheckCircle2 className="size-4" />
+            ) : (
+              <span className="size-5 rounded-full bg-white/20 flex items-center justify-center text-xs">
+                1
+              </span>
+            )}
             Extras de cont
           </div>
           <ArrowRight className="size-4 text-muted-foreground" />
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${step === 2 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
-            <span className="size-5 rounded-full bg-white/20 flex items-center justify-center text-xs">2</span>
+          <div
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${step === 2 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+          >
+            <span className="size-5 rounded-full bg-white/20 flex items-center justify-center text-xs">
+              2
+            </span>
             Facturi
           </div>
         </div>
@@ -566,22 +985,30 @@ export default function UploadPage() {
                   <FileText className="size-4 text-blue-600" />
                 </div>
                 <div>
-                  <CardTitle className="text-base">Pasul 1: Incarca extrasul de cont</CardTitle>
-                  <CardDescription>AI va citi extrasul si va detecta automat tranzactiile</CardDescription>
+                  <CardTitle className="text-base">
+                    Pasul 1: Incarca extrasul de cont
+                  </CardTitle>
+                  <CardDescription>
+                    AI va citi extrasul si va detecta automat tranzactiile
+                  </CardDescription>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="bank-account">Cont bancar</Label>
-                <Select value={selectedAccount} onValueChange={setSelectedAccount}>
+                <Select
+                  value={selectedAccount}
+                  onValueChange={setSelectedAccount}
+                >
                   <SelectTrigger id="bank-account">
                     <SelectValue placeholder="Selecteaza contul bancar" />
                   </SelectTrigger>
                   <SelectContent>
                     {bankAccounts.map((account) => (
                       <SelectItem key={account.id} value={account.id}>
-                        {account.bank_name} — {account.currency} ({account.iban.slice(-4)})
+                        {account.bank_name} — {account.currency} (
+                        {account.iban.slice(-4)})
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -617,7 +1044,12 @@ export default function UploadPage() {
               <div className="flex gap-3">
                 <Button
                   className="flex-1"
-                  disabled={!selectedAccount || statementFiles.length === 0 || statementUploading || !period}
+                  disabled={
+                    !selectedAccount ||
+                    statementFiles.length === 0 ||
+                    statementUploading ||
+                    !period
+                  }
                   onClick={handleStatementUpload}
                 >
                   {statementUploading ? (
@@ -634,7 +1066,10 @@ export default function UploadPage() {
                 </Button>
                 <Button
                   variant="outline"
-                  onClick={() => { setStep(2); setDetectedTransactions([]); }}
+                  onClick={() => {
+                    setStep(2);
+                    setDetectedTransactions([]);
+                  }}
                 >
                   Sari peste
                   <ArrowRight className="size-4 ml-1" />
@@ -658,9 +1093,18 @@ export default function UploadPage() {
                       </div>
                       <div>
                         <CardTitle className="text-base">
-                          Tranzactii detectate ({detectedTransactions.filter(t => t.invoiceUploaded).length}/{detectedTransactions.length} completate)
+                          Tranzactii detectate (
+                          {
+                            detectedTransactions.filter(
+                              (t) => t.invoiceUploaded
+                            ).length
+                          }
+                          /{detectedTransactions.length} completate)
                         </CardTitle>
-                        <CardDescription>Incarca factura PDF pentru fiecare tranzactie</CardDescription>
+                        <CardDescription>
+                          Incarca factura PDF, bifeaza eFactura, sau sterge
+                          tranzactiile inutile
+                        </CardDescription>
                       </div>
                     </div>
                     {allUploaded && (
@@ -678,73 +1122,165 @@ export default function UploadPage() {
                         key={tx.id}
                         className={`flex flex-col sm:flex-row sm:items-center gap-3 p-4 rounded-lg border ${
                           tx.invoiceUploaded
-                            ? "bg-emerald-50/50 border-emerald-200"
+                            ? tx.isEfactura
+                              ? "bg-violet-50/50 border-violet-200"
+                              : "bg-emerald-50/50 border-emerald-200"
                             : "bg-card border-border"
                         }`}
                       >
                         {/* Transaction info */}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1">
-                            <span className={`text-xs font-medium px-2 py-0.5 rounded ${
-                              tx.type === "debit"
-                                ? "bg-red-100 text-red-700"
-                                : "bg-emerald-100 text-emerald-700"
-                            }`}>
+                            <span
+                              className={`text-xs font-medium px-2 py-0.5 rounded ${
+                                tx.type === "debit"
+                                  ? "bg-red-100 text-red-700"
+                                  : "bg-emerald-100 text-emerald-700"
+                              }`}
+                            >
                               {tx.type === "debit" ? "Plata" : "Incasare"}
                             </span>
-                            <span className="text-xs text-muted-foreground">{tx.date}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {tx.date}
+                            </span>
                           </div>
-                          <p className="text-sm font-medium truncate">{tx.description}</p>
+                          <p className="text-sm font-medium truncate">
+                            {tx.description}
+                          </p>
                           <p className="text-lg font-bold">
-                            {tx.type === "debit" ? "-" : "+"}{tx.amount.toLocaleString("ro-RO", { minimumFractionDigits: 2 })} {tx.currency}
+                            {tx.type === "debit" ? "-" : "+"}
+                            {tx.amount.toLocaleString("ro-RO", {
+                              minimumFractionDigits: 2,
+                            })}{" "}
+                            {tx.currency}
                           </p>
                         </div>
 
-                        {/* Upload area */}
-                        <div className="sm:w-64 shrink-0">
-                          {tx.invoiceUploaded ? (
-                            <div className="flex items-center gap-2 p-3 rounded-lg bg-emerald-100 border border-emerald-200">
-                              <CheckCircle2 className="size-4 text-emerald-600" />
-                              <div className="min-w-0">
-                                <p className="text-xs font-medium text-emerald-700 truncate">
-                                  {tx.invoiceFile?.name}
-                                </p>
-                                {tx.ocrData?.invoice_number && (
-                                  <p className="text-[10px] text-emerald-600">
-                                    Nr: {tx.ocrData.invoice_number}
-                                    {tx.ocrData.partner_name ? ` — ${tx.ocrData.partner_name}` : ""}
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                          ) : tx.invoiceUploading ? (
-                            <div className="flex items-center gap-2 p-3 rounded-lg bg-blue-50 border border-blue-200">
-                              <Loader2 className="size-4 animate-spin text-blue-600" />
-                              <p className="text-xs text-blue-700">
-                                {tx.ocrProcessing ? "AI citeste factura..." : "Se incarca..."}
-                              </p>
-                            </div>
-                          ) : (
-                            <label className="flex items-center gap-2 p-3 rounded-lg border-2 border-dashed border-muted-foreground/25 hover:border-primary/50 cursor-pointer transition-colors">
-                              <Upload className="size-4 text-muted-foreground" />
-                              <span className="text-xs text-muted-foreground">Incarca factura PDF</span>
-                              <input
-                                type="file"
-                                accept=".pdf,.jpg,.png"
-                                className="sr-only"
-                                onChange={(e) => {
-                                  const files = e.target.files;
-                                  if (files && files[0]) {
-                                    handleTransactionInvoiceUpload(tx.id, files[0]);
+                        {/* Actions area */}
+                        <div className="flex items-center gap-2 shrink-0">
+                          {/* eFactura checkbox — show when: not uploading, not processing, AND (not completed OR completed via eFactura) */}
+                          {!tx.invoiceUploading &&
+                            !tx.efacturaProcessing &&
+                            (!tx.invoiceUploaded || tx.isEfactura) && (
+                              <div className="flex items-center gap-1.5 mr-1">
+                                <Checkbox
+                                  id={`efactura-${tx.id}`}
+                                  checked={tx.isEfactura}
+                                  onCheckedChange={() =>
+                                    handleToggleEfactura(tx.id)
                                   }
-                                }}
-                              />
-                            </label>
+                                />
+                                <Label
+                                  htmlFor={`efactura-${tx.id}`}
+                                  className="text-xs cursor-pointer whitespace-nowrap"
+                                >
+                                  eFactura
+                                </Label>
+                              </div>
+                            )}
+
+                          {/* Upload / Status area */}
+                          <div className="w-48 shrink-0">
+                            {tx.efacturaProcessing ? (
+                              <div className="flex items-center gap-2 p-2.5 rounded-lg bg-violet-50 border border-violet-200">
+                                <Loader2 className="size-4 animate-spin text-violet-600" />
+                                <p className="text-xs text-violet-700">
+                                  Se proceseaza...
+                                </p>
+                              </div>
+                            ) : tx.isEfactura && tx.invoiceUploaded ? (
+                              <div className="flex items-center gap-2 p-2.5 rounded-lg bg-violet-100 border border-violet-200">
+                                <CheckCircle2 className="size-4 text-violet-600" />
+                                <span className="text-xs font-medium text-violet-700">
+                                  eFactura
+                                </span>
+                              </div>
+                            ) : tx.invoiceUploaded ? (
+                              <div className="flex items-center gap-2 p-2.5 rounded-lg bg-emerald-100 border border-emerald-200">
+                                <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-xs font-medium text-emerald-700 truncate">
+                                    {tx.invoiceFile?.name || "Factura"}
+                                  </p>
+                                  {tx.ocrData?.invoice_number && (
+                                    <p className="text-[10px] text-emerald-600">
+                                      Nr: {tx.ocrData.invoice_number}
+                                    </p>
+                                  )}
+                                </div>
+                                <button
+                                  onClick={() =>
+                                    handleDeleteUploadedInvoice(tx.id)
+                                  }
+                                  className="p-1 rounded hover:bg-red-100 transition-colors"
+                                  title="Sterge factura"
+                                >
+                                  <Trash2 className="size-3.5 text-red-400 hover:text-red-600" />
+                                </button>
+                              </div>
+                            ) : tx.invoiceUploading ? (
+                              <div className="flex items-center gap-2 p-2.5 rounded-lg bg-blue-50 border border-blue-200">
+                                <Loader2 className="size-4 animate-spin text-blue-600" />
+                                <p className="text-xs text-blue-700">
+                                  {tx.ocrProcessing
+                                    ? "AI citeste..."
+                                    : "Se incarca..."}
+                                </p>
+                              </div>
+                            ) : (
+                              <label className="flex items-center gap-2 p-2.5 rounded-lg border-2 border-dashed border-muted-foreground/25 hover:border-primary/50 cursor-pointer transition-colors">
+                                <Upload className="size-4 text-muted-foreground" />
+                                <span className="text-xs text-muted-foreground">
+                                  Incarca factura
+                                </span>
+                                <input
+                                  type="file"
+                                  accept=".pdf,.jpg,.png"
+                                  className="sr-only"
+                                  onChange={(e) => {
+                                    const files = e.target.files;
+                                    if (files && files[0]) {
+                                      handleTransactionInvoiceUpload(
+                                        tx,
+                                        files[0]
+                                      );
+                                    }
+                                  }}
+                                />
+                              </label>
+                            )}
+                          </div>
+
+                          {/* Delete transaction button */}
+                          {!tx.invoiceUploading && !tx.efacturaProcessing && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-8 text-muted-foreground hover:text-red-600 hover:bg-red-50 shrink-0"
+                              onClick={() => handleDeleteTransaction(tx.id)}
+                              title="Sterge tranzactia"
+                            >
+                              <Trash2 className="size-4" />
+                            </Button>
                           )}
                         </div>
                       </div>
                     ))}
                   </div>
+
+                  {/* Delete statement button */}
+                  {currentStatementId && (
+                    <div className="mt-6 pt-4 border-t">
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => setShowDeleteStatementDialog(true)}
+                      >
+                        <Trash2 className="size-4 mr-2" />
+                        Sterge extrasul de cont
+                      </Button>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -758,7 +1294,9 @@ export default function UploadPage() {
                       <Receipt className="size-4 text-violet-600" />
                     </div>
                     <div>
-                      <CardTitle className="text-base">Adauga factura manual</CardTitle>
+                      <CardTitle className="text-base">
+                        Adauga factura manual
+                      </CardTitle>
                       <CardDescription>
                         {detectedTransactions.length === 0
                           ? "Incarca o factura si AI va completa automat campurile"
@@ -767,7 +1305,11 @@ export default function UploadPage() {
                     </div>
                   </div>
                   {!showManualAdd && (
-                    <Button variant="outline" size="sm" onClick={() => setShowManualAdd(true)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowManualAdd(true)}
+                    >
                       + Adauga
                     </Button>
                   )}
@@ -786,26 +1328,39 @@ export default function UploadPage() {
                   {manualOcrProcessing && (
                     <div className="flex items-center gap-2 p-3 rounded-lg bg-blue-50 border border-blue-200 animate-pulse">
                       <Sparkles className="size-4 text-blue-600 shrink-0" />
-                      <p className="text-sm text-blue-700">{manualOcrStatus}</p>
+                      <p className="text-sm text-blue-700">
+                        {manualOcrStatus}
+                      </p>
                     </div>
                   )}
                   {!manualOcrProcessing && manualOcrStatus && (
                     <div className="flex items-center gap-2 p-3 rounded-lg bg-emerald-50 border border-emerald-200">
                       <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
-                      <p className="text-sm text-emerald-700">{manualOcrStatus}</p>
+                      <p className="text-sm text-emerald-700">
+                        {manualOcrStatus}
+                      </p>
                     </div>
                   )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-2">
                       <Label>Tip</Label>
-                      <Select value={manualType} onValueChange={(v) => setManualType(v as "received" | "issued")}>
+                      <Select
+                        value={manualType}
+                        onValueChange={(v) =>
+                          setManualType(v as "received" | "issued")
+                        }
+                      >
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="received">Primita (cheltuiala)</SelectItem>
-                          <SelectItem value="issued">Emisa (venit)</SelectItem>
+                          <SelectItem value="received">
+                            Primita (cheltuiala)
+                          </SelectItem>
+                          <SelectItem value="issued">
+                            Emisa (venit)
+                          </SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -853,8 +1408,12 @@ export default function UploadPage() {
                     </div>
                   </div>
 
-                  {manualError && <p className="text-sm text-red-600">{manualError}</p>}
-                  {manualSuccess && <p className="text-sm text-emerald-600">{manualSuccess}</p>}
+                  {manualError && (
+                    <p className="text-sm text-red-600">{manualError}</p>
+                  )}
+                  {manualSuccess && (
+                    <p className="text-sm text-emerald-600">{manualSuccess}</p>
+                  )}
 
                   <div className="flex gap-3">
                     <Button
@@ -863,9 +1422,14 @@ export default function UploadPage() {
                       onClick={handleManualInvoiceUpload}
                     >
                       {manualUploading ? (
-                        <><Loader2 className="size-4 animate-spin mr-2" /> Se incarca...</>
+                        <>
+                          <Loader2 className="size-4 animate-spin mr-2" /> Se
+                          incarca...
+                        </>
                       ) : (
-                        <><Upload className="size-4 mr-2" /> Incarca factura</>
+                        <>
+                          <Upload className="size-4 mr-2" /> Incarca factura
+                        </>
                       )}
                     </Button>
                     <Button
@@ -890,14 +1454,19 @@ export default function UploadPage() {
               )}
             </Card>
 
-            {/* Back to step 1 */}
+            {/* Bottom actions */}
             <div className="flex items-center gap-3">
-              <Button variant="outline" onClick={() => {
-                setStep(1);
-                setOcrStatus("");
-                setStatementError("");
-                setStatementFiles([]);
-              }}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setStep(1);
+                  setOcrStatus("");
+                  setStatementError("");
+                  setStatementFiles([]);
+                  setCurrentStatementId(null);
+                  setDetectedTransactions([]);
+                }}
+              >
                 Incarca alt extras
               </Button>
               {allUploaded && detectedTransactions.length > 0 && (
@@ -910,6 +1479,41 @@ export default function UploadPage() {
           </div>
         )}
       </div>
+
+      {/* ==================== DELETE STATEMENT DIALOG ==================== */}
+      <Dialog
+        open={showDeleteStatementDialog}
+        onOpenChange={setShowDeleteStatementDialog}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Sterge extrasul de cont?</DialogTitle>
+            <DialogDescription>
+              Aceasta actiune va sterge extrasul, toate tranzactiile detectate si
+              facturile asociate. Actiunea nu poate fi anulata.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowDeleteStatementDialog(false)}
+              disabled={deletingStatement}
+            >
+              Anuleaza
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteStatement}
+              disabled={deletingStatement}
+            >
+              {deletingStatement && (
+                <Loader2 className="size-4 animate-spin mr-2" />
+              )}
+              Sterge definitiv
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
