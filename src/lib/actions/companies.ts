@@ -87,6 +87,15 @@ export async function createCompany(formData: FormData) {
 
   if (error) return { error: error.message, data: null };
 
+  // Link admin to company as owner
+  if (user?.id) {
+    await supabase.from("company_users").insert({
+      company_id: data.id,
+      user_id: user.id,
+      role: "owner",
+    });
+  }
+
   // Create current month period
   const now = new Date();
   await supabase.from("monthly_periods").insert({
