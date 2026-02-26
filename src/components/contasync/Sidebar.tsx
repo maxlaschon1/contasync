@@ -19,7 +19,9 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { createClient } from "@/lib/supabase/client";
 
 interface NavItem {
   label: string;
@@ -52,9 +54,17 @@ const clientNav: NavItem[] = [
 
 export function Sidebar({ variant, userName, companyName }: SidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const nav = variant === "admin" ? adminNav : clientNav;
+
+  async function handleLogout() {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.push("/login");
+    router.refresh();
+  }
 
   const isActive = (href: string) => {
     if (href === "/admin" || href === "/dashboard") return pathname === href;
@@ -118,7 +128,10 @@ export function Sidebar({ variant, userName, companyName }: SidebarProps) {
 
       {/* Footer */}
       <div className="px-3 py-4 border-t border-sidebar-border">
-        <button className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors w-full">
+        <button
+          onClick={handleLogout}
+          className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors w-full"
+        >
           <LogOut className="size-4 shrink-0" />
           {!collapsed && <span>Deconectare</span>}
         </button>
