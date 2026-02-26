@@ -19,6 +19,7 @@ import { getTaxes } from "@/lib/actions/taxes";
 import { getCurrentPeriod } from "@/lib/actions/periods";
 import { getProfile } from "@/lib/actions/auth";
 import { notFound } from "next/navigation";
+import { Download } from "lucide-react";
 
 export default async function CompanyDetailPage({
   params,
@@ -122,6 +123,17 @@ export default async function CompanyDetailPage({
                                   label="Încărcat"
                                   variant="success"
                                 />
+                                {statement.file_url && (
+                                  <a
+                                    href={statement.file_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                                  >
+                                    <Download className="size-3.5" />
+                                    Descarcă
+                                  </a>
+                                )}
                               </>
                             ) : (
                               <>
@@ -154,13 +166,14 @@ export default async function CompanyDetailPage({
                       <TableHead className="text-right">Sumă</TableHead>
                       <TableHead>Data</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Acțiuni</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {invoices.length === 0 ? (
                       <TableRow>
                         <TableCell
-                          colSpan={6}
+                          colSpan={7}
                           className="text-center py-8 text-muted-foreground"
                         >
                           Nu există facturi pentru această perioadă.
@@ -172,17 +185,27 @@ export default async function CompanyDetailPage({
                           id: string;
                           invoice_number: string;
                           partner_name: string;
+                          partner_cui: string;
                           type: string;
                           total_amount: number;
                           currency: string;
                           issue_date: string;
                           status: string;
+                          file_url: string;
+                          file_name: string;
                         }) => (
                           <TableRow key={inv.id}>
                             <TableCell className="font-medium">
                               {inv.invoice_number || "—"}
                             </TableCell>
-                            <TableCell>{inv.partner_name || "—"}</TableCell>
+                            <TableCell>
+                              <div>
+                                <p className="text-sm">{inv.partner_name || "—"}</p>
+                                {inv.partner_cui && (
+                                  <p className="text-xs text-muted-foreground">{inv.partner_cui}</p>
+                                )}
+                              </div>
+                            </TableCell>
                             <TableCell>
                               <StatusBadge
                                 label={
@@ -223,6 +246,23 @@ export default async function CompanyDetailPage({
                                     : "warning"
                                 }
                               />
+                            </TableCell>
+                            <TableCell className="text-right">
+                              {inv.file_url ? (
+                                <a
+                                  href={inv.file_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+                                >
+                                  <Download className="size-3.5" />
+                                  {inv.file_name || "Descarcă"}
+                                </a>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">
+                                  Fără fișier
+                                </span>
+                              )}
                             </TableCell>
                           </TableRow>
                         )
