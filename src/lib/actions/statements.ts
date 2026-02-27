@@ -90,6 +90,48 @@ export async function deleteTransaction(id: string) {
   return { success: true };
 }
 
+export async function getUnmatchedTransactions(
+  companyId: string,
+  periodId: string
+) {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("bank_transactions")
+    .select(
+      `
+      *,
+      bank_statements!inner(
+        period_id,
+        company_bank_accounts(bank_name)
+      )
+    `
+    )
+    .eq("company_id", companyId)
+    .eq("bank_statements.period_id", periodId)
+    .eq("match_status", "unmatched")
+    .order("transaction_date", { ascending: true });
+
+  if (error) return { error: error.message, data: [] };
+  return { data: data || [], error: null };
+}
+
+export async function updateTransactionMatch(
+  transactionId: string,
+  invoiceId: string
+) {
+  const serviceClient = createServiceClient();
+  const { error } = await serviceClient
+    .from("bank_transactions")
+    .update({
+      match_status: "matched",
+      matched_invoice_id: invoiceId,
+    })
+    .eq("id", transactionId);
+
+  if (error) return { error: error.message };
+  return { success: true };
+}
+
 export async function deleteStatement(id: string) {
   const serviceClient = createServiceClient();
 

@@ -99,8 +99,9 @@ export async function updatePeriodStatus(
   periodId: string,
   status: "open" | "pending_review" | "completed"
 ) {
-  const supabase = await createClient();
-  const { error } = await supabase
+  // Use service role — clients only have SELECT on monthly_periods
+  const serviceClient = createServiceClient();
+  const { error } = await serviceClient
     .from("monthly_periods")
     .update({ status })
     .eq("id", periodId);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { DashboardHeader } from "@/components/contasync/DashboardHeader";
 import { StatusBadge } from "@/components/contasync/StatusBadge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -27,10 +27,12 @@ import {
   TooltipTrigger,
   TooltipProvider,
 } from "@/components/ui/tooltip";
-import { Eye, Download, Trash2, Loader2 } from "lucide-react";
+import { Eye, Download, Trash2, Loader2, Upload, CheckCircle2, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
-import { deleteInvoice } from "@/lib/actions/invoices";
+import { deleteInvoice, uploadInvoice } from "@/lib/actions/invoices";
+import { updateTransactionMatch } from "@/lib/actions/statements";
+import { updatePeriodStatus } from "@/lib/actions/periods";
 import { useRouter } from "next/navigation";
 
 type FilterType = "all" | "received" | "issued";
@@ -44,8 +46,18 @@ const statusConfig: Record<string, { label: string; variant: "success" | "info" 
   rejected: { label: "Respins", variant: "warning" },
 };
 
+const MONTHS_RO = [
+  "Ianuarie", "Februarie", "Martie", "Aprilie", "Mai", "Iunie",
+  "Iulie", "August", "Septembrie", "Octombrie", "Noiembrie", "Decembrie",
+];
+
 interface InvoicesClientProps {
   invoices: Record<string, unknown>[];
+  statements: Record<string, unknown>[];
+  unmatchedTransactions: Record<string, unknown>[];
+  periodId: string;
+  periodStatus: string;
+  companyId: string;
   userName: string;
   subtitle: string;
   notificationCount: number;
@@ -53,6 +65,11 @@ interface InvoicesClientProps {
 
 export function InvoicesClient({
   invoices,
+  statements,
+  unmatchedTransactions,
+  periodId,
+  periodStatus,
+  companyId,
   userName,
   subtitle,
   notificationCount,
@@ -61,6 +78,10 @@ export function InvoicesClient({
   const [filter, setFilter] = useState<FilterType>("all");
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [uploadingTxId, setUploadingTxId] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pendingTxRef = useRef<Record<string, unknown> | null>(null);
 
   // Generate a signed URL and open/download the PDF
   async function handleFileAction(fileUrl: string, fileName: string, action: "view" | "download") {
@@ -79,7 +100,6 @@ export function InvoicesClient({
     if (action === "view") {
       window.open(data.signedUrl, "_blank");
     } else {
-      // Download: create a temporary link and click it
       const a = document.createElement("a");
       a.href = data.signedUrl;
       a.download = fileName || "factura.pdf";
@@ -105,37 +125,176 @@ export function InvoicesClient({
     setDeleteTarget(null);
   }
 
+  // Upload invoice for unmatched transaction
+  function handleUploadClick(tx: Record<string, unknown>) {
+    pendingTxRef.current = tx;
+    fileInputRef.current?.click();
+  }
+
+  async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    const tx = pendingTxRef.current;
+    if (!file || !tx) return;
+
+    // Reset input so same file can be re-selected
+    e.target.value = "";
+
+    const txId = tx.id as string;
+    setUploadingTxId(txId);
+
+    try {
+      const supabase = createClient();
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, "0");
+
+      // Upload file to storage
+      const filePath = `${companyId}/${year}/${month}/invoices/${Date.now()}_${file.name}`;
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from("documents")
+        .upload(filePath, file);
+
+      if (uploadError) throw new Error(uploadError.message);
+      const invoiceStoragePath = uploadData.path;
+
+      // Run OCR if PDF
+      let ocrData: Record<string, unknown> | undefined;
+      if (file.name.toLowerCase().endsWith(".pdf")) {
+        try {
+          const ocrRes = await fetch("/api/ocr/process", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              storagePath: invoiceStoragePath,
+              fileType: "invoice",
+            }),
+          });
+          let ocrResult;
+          try {
+            const text = await ocrRes.text();
+            ocrResult = text ? JSON.parse(text) : { success: false };
+          } catch {
+            ocrResult = { success: false };
+          }
+          if (ocrResult.success && ocrResult.data) {
+            ocrData = ocrResult.data;
+          }
+        } catch {
+          // OCR failed, use transaction data as fallback
+        }
+      }
+
+      // Create invoice record
+      const txAmount = Math.abs(tx.amount as number);
+      const totalAmount = (ocrData?.total_amount as number) || txAmount;
+      const vatAmount = Math.round((totalAmount - totalAmount / 1.19) * 100) / 100;
+      const amountWithoutVat = Math.round((totalAmount - vatAmount) * 100) / 100;
+
+      const invoiceFormData = new FormData();
+      invoiceFormData.set("company_id", companyId);
+      invoiceFormData.set("period_id", periodId);
+      invoiceFormData.set("type", (tx.type as string) === "debit" ? "received" : "issued");
+      invoiceFormData.set("invoice_number", (ocrData?.invoice_number as string) || "");
+      invoiceFormData.set("partner_name", (ocrData?.partner_name as string) || (tx.description as string));
+      invoiceFormData.set("partner_cui", (ocrData?.partner_cui as string) || "");
+      invoiceFormData.set("issue_date", (ocrData?.issue_date as string) || (tx.transaction_date as string) || "");
+      invoiceFormData.set("total_amount", String(totalAmount));
+      invoiceFormData.set("vat_amount", String(vatAmount));
+      invoiceFormData.set("amount_without_vat", String(amountWithoutVat));
+      invoiceFormData.set("currency", (tx.currency as string) || "RON");
+      invoiceFormData.set("file_name", file.name);
+      invoiceFormData.set("file_url", invoiceStoragePath);
+
+      const result = await uploadInvoice(invoiceFormData);
+
+      if (result.error) {
+        toast.error(`Eroare: ${result.error}`);
+        setUploadingTxId(null);
+        return;
+      }
+
+      // Link transaction to invoice
+      if (result.data?.id) {
+        await updateTransactionMatch(txId, result.data.id);
+      }
+
+      toast.success("Factura incarcata");
+      router.refresh();
+    } catch (err) {
+      console.error("[InvoicesClient] Upload error:", err);
+      toast.error("Eroare la incarcarea facturii");
+    }
+
+    setUploadingTxId(null);
+    pendingTxRef.current = null;
+  }
+
+  // Confirm period
+  async function handleConfirmPeriod() {
+    if (!periodId) return;
+    setConfirming(true);
+
+    const result = await updatePeriodStatus(periodId, "completed");
+    if (result.error) {
+      toast.error(`Eroare: ${result.error}`);
+    } else {
+      toast.success("Luna confirmata cu succes");
+      router.refresh();
+    }
+
+    setConfirming(false);
+  }
+
   const filteredInvoices =
     filter === "all"
       ? invoices
       : invoices.filter((inv) => inv.type === filter);
 
   const filterActions = (
-    <div className="flex items-center gap-1">
-      <Button
-        variant={filter === "all" ? "default" : "ghost"}
-        size="sm"
-        className="text-xs h-7"
-        onClick={() => setFilter("all")}
-      >
-        Toate
-      </Button>
-      <Button
-        variant={filter === "received" ? "default" : "ghost"}
-        size="sm"
-        className="text-xs h-7"
-        onClick={() => setFilter("received")}
-      >
-        Primite
-      </Button>
-      <Button
-        variant={filter === "issued" ? "default" : "ghost"}
-        size="sm"
-        className="text-xs h-7"
-        onClick={() => setFilter("issued")}
-      >
-        Emise
-      </Button>
+    <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1">
+        <Button
+          variant={filter === "all" ? "default" : "ghost"}
+          size="sm"
+          className="text-xs h-7"
+          onClick={() => setFilter("all")}
+        >
+          Toate
+        </Button>
+        <Button
+          variant={filter === "received" ? "default" : "ghost"}
+          size="sm"
+          className="text-xs h-7"
+          onClick={() => setFilter("received")}
+        >
+          Primite
+        </Button>
+        <Button
+          variant={filter === "issued" ? "default" : "ghost"}
+          size="sm"
+          className="text-xs h-7"
+          onClick={() => setFilter("issued")}
+        >
+          Emise
+        </Button>
+      </div>
+
+      {/* Confirm period button */}
+      {periodId && periodStatus !== "completed" && (
+        <Button
+          size="sm"
+          className="text-xs h-7 ml-2"
+          onClick={handleConfirmPeriod}
+          disabled={confirming}
+        >
+          {confirming && <Loader2 className="size-3 animate-spin mr-1" />}
+          <CheckCircle2 className="size-3 mr-1" />
+          Confirma luna
+        </Button>
+      )}
+      {periodStatus === "completed" && (
+        <StatusBadge label="Confirmat" variant="success" />
+      )}
     </div>
   );
 
@@ -147,6 +306,15 @@ export function InvoicesClient({
         userName={userName}
         notificationCount={notificationCount}
         actions={filterActions}
+      />
+
+      {/* Hidden file input for Lipsa upload */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf,.jpg,.png"
+        className="hidden"
+        onChange={handleFileSelected}
       />
 
       <div className="p-4 lg:p-6">
@@ -166,6 +334,92 @@ export function InvoicesClient({
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {/* Bank statement header rows */}
+                {statements.map((stmt) => {
+                  const bankAccount = stmt.company_bank_accounts as Record<string, unknown> | null;
+                  const bankName = (bankAccount?.bank_name as string) || "Banca";
+                  const stmtFileUrl = stmt.file_url as string;
+                  const stmtFileName = stmt.file_name as string;
+                  const hasStmtFile = stmtFileUrl && stmtFileUrl.length > 0;
+                  const uploadedAt = stmt.uploaded_at as string;
+
+                  return (
+                    <TableRow key={`stmt-${stmt.id as string}`} className="bg-muted/30">
+                      <TableCell className="font-medium">
+                        <div className="flex items-center gap-1.5">
+                          <FileText className="size-4 text-muted-foreground" />
+                          Extras de cont
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge label={bankName} variant="neutral" dot={false} />
+                      </TableCell>
+                      <TableCell>{subtitle}</TableCell>
+                      <TableCell className="text-right text-muted-foreground">{"\u2014"}</TableCell>
+                      <TableCell className="text-right text-muted-foreground">{"\u2014"}</TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {uploadedAt
+                          ? new Date(uploadedAt).toLocaleDateString("ro-RO")
+                          : "\u2014"}
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge label="Incarcat" variant="success" />
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center justify-end gap-1">
+                          {hasStmtFile ? (
+                            <>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={() => handleFileAction(stmtFileUrl, stmtFileName, "view")}
+                                    className="p-1.5 rounded-md text-muted-foreground hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                                  >
+                                    <Eye className="size-4" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Vezi PDF</TooltipContent>
+                              </Tooltip>
+
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    onClick={() => handleFileAction(stmtFileUrl, stmtFileName, "download")}
+                                    className="p-1.5 rounded-md text-muted-foreground hover:text-emerald-600 hover:bg-emerald-50 transition-colors"
+                                  >
+                                    <Download className="size-4" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Descarca</TooltipContent>
+                              </Tooltip>
+                            </>
+                          ) : (
+                            <>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button disabled className="p-1.5 rounded-md text-muted-foreground/30 cursor-not-allowed">
+                                    <Eye className="size-4" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Fara fisier</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button disabled className="p-1.5 rounded-md text-muted-foreground/30 cursor-not-allowed">
+                                    <Download className="size-4" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent>Fara fisier</TooltipContent>
+                              </Tooltip>
+                            </>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+
+                {/* Normal invoice rows */}
                 {filteredInvoices.map((invoice) => {
                   const status = statusConfig[invoice.status as string] || statusConfig.pending;
                   const fileUrl = invoice.file_url as string;
@@ -291,7 +545,71 @@ export function InvoicesClient({
                     </TableRow>
                   );
                 })}
-                {filteredInvoices.length === 0 && (
+
+                {/* Unmatched transaction rows — "Lipsa" */}
+                {unmatchedTransactions.map((tx) => {
+                  const isUploading = uploadingTxId === (tx.id as string);
+
+                  return (
+                    <TableRow key={`missing-${tx.id as string}`} className="bg-red-50/30">
+                      <TableCell className="font-medium text-muted-foreground">
+                        {"\u2014"}
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge
+                          label={(tx.type as string) === "debit" ? "Primita" : "Emisa"}
+                          variant={(tx.type as string) === "debit" ? "info" : "neutral"}
+                          dot={false}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        {(tx.description as string) || "\u2014"}
+                      </TableCell>
+                      <TableCell className="text-right font-medium">
+                        {(Math.abs(tx.amount as number) || 0).toLocaleString("ro-RO", {
+                          minimumFractionDigits: 2,
+                        })}{" "}
+                        {(tx.currency as string) || "RON"}
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground">
+                        {"\u2014"}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {(tx.transaction_date as string)
+                          ? new Date(tx.transaction_date as string).toLocaleDateString("ro-RO")
+                          : "\u2014"}
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge label="Lipsa" variant="danger" />
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center justify-end gap-1">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                onClick={() => handleUploadClick(tx)}
+                                disabled={isUploading}
+                                className="p-1.5 rounded-md text-muted-foreground hover:text-orange-600 hover:bg-orange-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {isUploading ? (
+                                  <Loader2 className="size-4 animate-spin" />
+                                ) : (
+                                  <Upload className="size-4" />
+                                )}
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {isUploading ? "Se incarca..." : "Incarca factura"}
+                            </TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+
+                {/* Empty state */}
+                {filteredInvoices.length === 0 && unmatchedTransactions.length === 0 && statements.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                       Nu exista facturi pentru filtrul selectat.

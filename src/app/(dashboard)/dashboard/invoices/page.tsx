@@ -2,6 +2,7 @@ import { getProfile } from "@/lib/actions/auth";
 import { getInvoices } from "@/lib/actions/invoices";
 import { getCurrentPeriod } from "@/lib/actions/periods";
 import { getUnreadCount } from "@/lib/actions/notifications";
+import { getStatements, getUnmatchedTransactions } from "@/lib/actions/statements";
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import { InvoicesClient } from "./invoices-client";
@@ -30,9 +31,13 @@ export default async function InvoicesPage() {
     return <p className="p-6 text-muted-foreground">Nu ai o firma asociata.</p>;
   }
 
-  const [periodResult, invoicesResult, unreadCount] = await Promise.all([
-    getCurrentPeriod(company.id),
-    getInvoices(company.id),
+  const periodResult = await getCurrentPeriod(company.id);
+  const period = periodResult.data;
+
+  const [invoicesResult, statementsResult, unmatchedResult, unreadCount] = await Promise.all([
+    getInvoices(company.id, period?.id ? { periodId: period.id } : undefined),
+    period?.id ? getStatements(company.id, period.id) : Promise.resolve({ data: [], error: null }),
+    period?.id ? getUnmatchedTransactions(company.id, period.id) : Promise.resolve({ data: [], error: null }),
     getUnreadCount(),
   ]);
 
@@ -42,6 +47,11 @@ export default async function InvoicesPage() {
   return (
     <InvoicesClient
       invoices={invoicesResult.data || []}
+      statements={statementsResult.data || []}
+      unmatchedTransactions={unmatchedResult.data || []}
+      periodId={period?.id || ""}
+      periodStatus={period?.status || "open"}
+      companyId={company.id}
       userName={profile.full_name || "Client"}
       subtitle={subtitle}
       notificationCount={unreadCount}
