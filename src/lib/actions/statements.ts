@@ -132,7 +132,10 @@ export async function updateTransactionMatch(
   return { success: true };
 }
 
-export async function deleteStatement(id: string) {
+export async function deleteStatement(
+  id: string,
+  options?: { deleteLinkedInvoices?: boolean }
+) {
   const serviceClient = createServiceClient();
 
   // Get statement for storage cleanup
@@ -142,6 +145,43 @@ export async function deleteStatement(id: string) {
     .eq("id", id)
     .single();
 
+  // If requested, delete linked invoices first (before CASCADE removes transactions)
+  if (options?.deleteLinkedInvoices) {
+    // Find all transactions for this statement that have a matched invoice
+    const { data: linkedTxs } = await serviceClient
+      .from("bank_transactions")
+      .select("matched_invoice_id")
+      .eq("statement_id", id)
+      .not("matched_invoice_id", "is", null);
+
+    if (linkedTxs && linkedTxs.length > 0) {
+      const invoiceIds = linkedTxs
+        .map((t) => t.matched_invoice_id)
+        .filter(Boolean) as string[];
+
+      if (invoiceIds.length > 0) {
+        // Get invoice file URLs for storage cleanup
+        const { data: invoices } = await serviceClient
+          .from("invoices")
+          .select("file_url")
+          .in("id", invoiceIds);
+
+        // Delete invoices from DB
+        await serviceClient.from("invoices").delete().in("id", invoiceIds);
+
+        // Delete invoice files from storage
+        if (invoices && invoices.length > 0) {
+          const filePaths = invoices
+            .map((inv) => inv.file_url)
+            .filter((url) => url && url.length > 0 && url !== "[eFactura]");
+          if (filePaths.length > 0) {
+            await serviceClient.storage.from("documents").remove(filePaths);
+          }
+        }
+      }
+    }
+  }
+
   // Delete statement (ON DELETE CASCADE removes bank_transactions)
   const { error } = await serviceClient
     .from("bank_statements")
@@ -150,7 +190,7 @@ export async function deleteStatement(id: string) {
 
   if (error) return { error: error.message };
 
-  // Delete storage file
+  // Delete statement storage file
   if (statement?.file_url) {
     await serviceClient.storage
       .from("documents")

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Trash2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -31,18 +32,26 @@ export function DeleteStatementButton({
   const router = useRouter();
   const [showDialog, setShowDialog] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [alsoDeleteInvoices, setAlsoDeleteInvoices] = useState(false);
 
   async function handleDelete() {
     setDeleting(true);
-    const result = await deleteStatement(statementId);
+    const result = await deleteStatement(statementId, {
+      deleteLinkedInvoices: alsoDeleteInvoices,
+    });
     if (result.error) {
       toast.error(`Eroare: ${result.error}`);
     } else {
-      toast.success("Extras de cont sters");
+      toast.success(
+        alsoDeleteInvoices
+          ? "Extras de cont si facturile asociate au fost sterse"
+          : "Extras de cont sters"
+      );
       router.refresh();
     }
     setDeleting(false);
     setShowDialog(false);
+    setAlsoDeleteInvoices(false);
   }
 
   return (
@@ -59,7 +68,13 @@ export function DeleteStatementButton({
         <TooltipContent>Sterge extras</TooltipContent>
       </Tooltip>
 
-      <Dialog open={showDialog} onOpenChange={setShowDialog}>
+      <Dialog
+        open={showDialog}
+        onOpenChange={(open) => {
+          setShowDialog(open);
+          if (!open) setAlsoDeleteInvoices(false);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Sterge extras de cont?</DialogTitle>
@@ -68,8 +83,32 @@ export function DeleteStatementButton({
               Toate tranzactiile asociate vor fi sterse.
             </DialogDescription>
           </DialogHeader>
+
+          <div className="flex items-center gap-3 py-2 px-1">
+            <Checkbox
+              id="dashboard-also-delete-invoices"
+              checked={alsoDeleteInvoices}
+              onCheckedChange={(checked) =>
+                setAlsoDeleteInvoices(checked === true)
+              }
+            />
+            <label
+              htmlFor="dashboard-also-delete-invoices"
+              className="text-sm font-medium leading-none cursor-pointer select-none"
+            >
+              Sterge si toate facturile asociate acestui extras
+            </label>
+          </div>
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowDialog(false)} disabled={deleting}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowDialog(false);
+                setAlsoDeleteInvoices(false);
+              }}
+              disabled={deleting}
+            >
               Anuleaza
             </Button>
             <Button variant="destructive" onClick={handleDelete} disabled={deleting}>

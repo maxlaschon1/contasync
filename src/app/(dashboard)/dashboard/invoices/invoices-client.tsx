@@ -27,6 +27,7 @@ import {
   TooltipTrigger,
   TooltipProvider,
 } from "@/components/ui/tooltip";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Eye, Download, Trash2, Loader2, Upload, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -91,6 +92,7 @@ export function InvoicesClient({
     type: "invoice" | "statement" | "transaction";
   } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [alsoDeleteInvoices, setAlsoDeleteInvoices] = useState(false);
   const [uploadingTxId, setUploadingTxId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingTxRef = useRef<Record<string, unknown> | null>(null);
@@ -130,7 +132,9 @@ export function InvoicesClient({
     if (deleteTarget.type === "invoice") {
       result = await deleteInvoice(deleteTarget.id);
     } else if (deleteTarget.type === "statement") {
-      result = await deleteStatement(deleteTarget.id);
+      result = await deleteStatement(deleteTarget.id, {
+        deleteLinkedInvoices: alsoDeleteInvoices,
+      });
     } else {
       result = await deleteTransaction(deleteTarget.id);
     }
@@ -138,13 +142,21 @@ export function InvoicesClient({
     if (result.error) {
       toast.error(`Eroare: ${result.error}`);
     } else {
-      const labels = { invoice: "Factura stearsa", statement: "Extras de cont sters", transaction: "Tranzactie stearsa" };
-      toast.success(labels[deleteTarget.type]);
+      const label =
+        deleteTarget.type === "statement" && alsoDeleteInvoices
+          ? "Extras de cont si facturile asociate au fost sterse"
+          : deleteTarget.type === "statement"
+          ? "Extras de cont sters"
+          : deleteTarget.type === "transaction"
+          ? "Tranzactie stearsa"
+          : "Factura stearsa";
+      toast.success(label);
       router.refresh();
     }
 
     setDeleting(false);
     setDeleteTarget(null);
+    setAlsoDeleteInvoices(false);
   }
 
   // Upload invoice for unmatched transaction
@@ -667,7 +679,15 @@ export function InvoicesClient({
       </div>
 
       {/* Delete confirmation dialog */}
-      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+      <Dialog
+        open={!!deleteTarget}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(null);
+            setAlsoDeleteInvoices(false);
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
@@ -685,10 +705,32 @@ export function InvoicesClient({
               )}
             </DialogDescription>
           </DialogHeader>
+
+          {deleteTarget?.type === "statement" && (
+            <div className="flex items-center gap-3 py-2 px-1">
+              <Checkbox
+                id="also-delete-invoices"
+                checked={alsoDeleteInvoices}
+                onCheckedChange={(checked) =>
+                  setAlsoDeleteInvoices(checked === true)
+                }
+              />
+              <label
+                htmlFor="also-delete-invoices"
+                className="text-sm font-medium leading-none cursor-pointer select-none"
+              >
+                Sterge si toate facturile asociate acestui extras
+              </label>
+            </div>
+          )}
+
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setDeleteTarget(null)}
+              onClick={() => {
+                setDeleteTarget(null);
+                setAlsoDeleteInvoices(false);
+              }}
               disabled={deleting}
             >
               Anuleaza
