@@ -303,23 +303,23 @@ export function InvoicesClient({
       <div className="p-4 lg:p-6 space-y-4">
         {/* ============ EXTRAS DE CONT — separate table ============ */}
         {statements.length > 0 && (
-          <Card className="border border-border shadow-none">
-            <CardHeader className="px-4 py-3 border-b">
-              <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                <FileText className="size-4 text-muted-foreground" />
+          <Card className="border border-blue-200 shadow-none bg-blue-50/30">
+            <CardHeader className="px-4 py-3 border-b border-blue-200 bg-blue-50/60">
+              <CardTitle className="text-sm font-semibold flex items-center gap-2 text-blue-900">
+                <FileText className="size-4 text-blue-500" />
                 Extrase de cont
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead>Banca</TableHead>
-                    <TableHead>Luna</TableHead>
-                    <TableHead>Fisier</TableHead>
-                    <TableHead>Data incarcare</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Actiuni</TableHead>
+                  <TableRow className="bg-blue-50/40 hover:bg-blue-50/40">
+                    <TableHead className="text-blue-900/70">Banca</TableHead>
+                    <TableHead className="text-blue-900/70">Luna</TableHead>
+                    <TableHead className="text-blue-900/70">Fisier</TableHead>
+                    <TableHead className="text-blue-900/70">Data incarcare</TableHead>
+                    <TableHead className="text-blue-900/70">Status</TableHead>
+                    <TableHead className="text-right text-blue-900/70">Actiuni</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -413,6 +413,17 @@ export function InvoicesClient({
 
         {/* ============ FACTURI — invoices + lipsa ============ */}
         <Card className="border border-border shadow-none">
+          <CardHeader className="px-4 py-3 border-b">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <FileText className="size-4 text-muted-foreground" />
+              Facturi
+              {filteredInvoices.length > 0 && (
+                <span className="text-xs font-normal text-muted-foreground">
+                  ({filteredInvoices.length} incarcate{unmatchedTransactions.length > 0 ? ` · ${unmatchedTransactions.length} lipsa` : ""})
+                </span>
+              )}
+            </CardTitle>
+          </CardHeader>
           <CardContent className="p-0">
             <Table>
               <TableHeader>
@@ -441,7 +452,7 @@ export function InvoicesClient({
                   const flag = getOriginFlag(partnerName, currency);
 
                   return (
-                    <TableRow key={invoice.id as string}>
+                    <TableRow key={invoice.id as string} className="bg-emerald-50/40 hover:bg-emerald-50/60">
                       <TableCell className="font-medium">
                         {(invoice.invoice_number as string) || "\u2014"}
                       </TableCell>
@@ -567,7 +578,7 @@ export function InvoicesClient({
                   const flag = getOriginFlag(description, currency);
 
                   return (
-                    <TableRow key={`missing-${tx.id as string}`} className="bg-red-50/40">
+                    <TableRow key={`missing-${tx.id as string}`} className="bg-red-50/50 hover:bg-red-50/70">
                       <TableCell className="font-medium text-muted-foreground">
                         {"\u2014"}
                       </TableCell>
