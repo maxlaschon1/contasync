@@ -528,7 +528,8 @@ export default function UploadPage() {
           ocrData?.issue_date || tx.date
         );
 
-        const totalAmount = ocrData?.total_amount || tx.amount;
+        // Always use bank transaction amount (already in RON) — OCR amount may be in foreign currency
+        const totalAmount = Math.abs(tx.amount);
         const vatAmount =
           Math.round((totalAmount - totalAmount / 1.19) * 100) / 100;
         const amountWithoutVat =
@@ -903,7 +904,8 @@ export default function UploadPage() {
         const inv = result.invoice;
         const tx = result.transaction;
 
-        const totalAmount = inv.ocrData?.total_amount || tx.amount;
+        // Always use bank transaction amount (already in RON) — OCR amount may be in foreign currency
+        const totalAmount = Math.abs(tx.amount);
         const vatAmount =
           Math.round((totalAmount - totalAmount / 1.19) * 100) / 100;
         const amountWithoutVat =
@@ -990,7 +992,8 @@ export default function UploadPage() {
     const tx = detectedTransactions.find((t) => t.id === txId);
     if (!tx || !company || !period) return;
 
-    const totalAmount = invoice.ocrData?.total_amount || tx.amount;
+    // Always use bank transaction amount (already in RON) — OCR amount may be in foreign currency
+    const totalAmount = Math.abs(tx.amount);
     const vatAmount =
       Math.round((totalAmount - totalAmount / 1.19) * 100) / 100;
     const amountWithoutVat =

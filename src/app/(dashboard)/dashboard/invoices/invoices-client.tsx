@@ -204,8 +204,8 @@ export function InvoicesClient({
         }
       }
 
-      const txAmount = Math.abs(tx.amount as number);
-      const totalAmount = (ocrData?.total_amount as number) || txAmount;
+      // Always use bank transaction amount (already in RON) — OCR amount may be in foreign currency
+      const totalAmount = Math.abs(tx.amount as number);
       const vatAmount = Math.round((totalAmount - totalAmount / 1.19) * 100) / 100;
       const amountWithoutVat = Math.round((totalAmount - vatAmount) * 100) / 100;
 
