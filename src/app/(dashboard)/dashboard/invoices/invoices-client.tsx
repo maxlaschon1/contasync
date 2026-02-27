@@ -28,14 +28,28 @@ import {
   TooltipProvider,
 } from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Eye, Download, Trash2, Loader2, Upload, FileText } from "lucide-react";
+import { Eye, Download, Trash2, Loader2, Upload, FileText, Calendar, Receipt } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { deleteInvoice, deleteAllInvoices, uploadInvoice } from "@/lib/actions/invoices";
 import { updateTransactionMatch, deleteStatement, deleteTransaction } from "@/lib/actions/statements";
 import { useRouter } from "next/navigation";
+import { cn } from "@/lib/utils";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 
 type FilterType = "all" | "received" | "issued";
+
+const MONTHS_RO = [
+  "Ianuarie", "Februarie", "Martie", "Aprilie", "Mai", "Iunie",
+  "Iulie", "August", "Septembrie", "Octombrie", "Noiembrie", "Decembrie",
+];
+
+const periodStatusConfig: Record<string, { label: string; variant: "success" | "warning" | "info" | "neutral" }> = {
+  open: { label: "Deschis", variant: "info" },
+  pending_review: { label: "In revizuire", variant: "warning" },
+  completed: { label: "Finalizat", variant: "success" },
+  locked: { label: "Blocat", variant: "neutral" },
+};
 
 const statusConfig: Record<string, { label: string; variant: "success" | "info" | "danger" | "warning" }> = {
   verified: { label: "Verificat", variant: "success" },
@@ -65,6 +79,9 @@ interface InvoicesClientProps {
   invoices: Record<string, unknown>[];
   statements: Record<string, unknown>[];
   unmatchedTransactions: Record<string, unknown>[];
+  periods: Record<string, unknown>[];
+  selectedYear: number;
+  selectedMonth: number;
   periodId: string;
   periodStatus: string;
   companyId: string;
@@ -77,6 +94,9 @@ export function InvoicesClient({
   invoices,
   statements,
   unmatchedTransactions,
+  periods,
+  selectedYear,
+  selectedMonth,
   periodId,
   periodStatus,
   companyId,
@@ -327,7 +347,70 @@ export function InvoicesClient({
         onChange={handleFileSelected}
       />
 
-      <div className="p-4 lg:p-6 space-y-4">
+      {/* ============ MONTH SELECTOR BAR ============ */}
+      {periods.length > 0 && (
+        <div className="px-4 lg:px-6 pt-4 lg:pt-6">
+          <ScrollArea className="w-full">
+            <div className="flex gap-2 pb-3">
+              {periods.map((p) => {
+                const pYear = p.year as number;
+                const pMonth = p.month as number;
+                const isSelected = pYear === selectedYear && pMonth === selectedMonth;
+                const now = new Date();
+                const isCurrentMonth = pYear === now.getFullYear() && pMonth === now.getMonth() + 1;
+                const pStatus = periodStatusConfig[(p.status as string) || "open"] || periodStatusConfig.open;
+                const stmtCount = (p.statements_count as number) || 0;
+                const invCount = (p.invoices_count as number) || 0;
+
+                return (
+                  <button
+                    key={`${pYear}-${pMonth}`}
+                    onClick={() =>
+                      router.push(`/dashboard/invoices?year=${pYear}&month=${pMonth}`)
+                    }
+                    className={cn(
+                      "flex-shrink-0 rounded-lg border px-4 py-2.5 text-left transition-all min-w-[160px]",
+                      isSelected
+                        ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                        : "border-border bg-card hover:border-muted-foreground/30 hover:bg-muted/30"
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className={cn(
+                        "text-sm font-semibold",
+                        isSelected ? "text-primary" : "text-foreground"
+                      )}>
+                        {MONTHS_RO[pMonth - 1]} {pYear}
+                      </p>
+                      {isCurrentMonth && (
+                        <span className="text-[10px] font-medium text-primary bg-primary/10 px-1.5 py-0.5 rounded-full">
+                          Acum
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 mt-1">
+                      <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                        <FileText className="size-3" />
+                        {stmtCount} extrase
+                      </span>
+                      <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                        <Receipt className="size-3" />
+                        {invCount} facturi
+                      </span>
+                    </div>
+                    <div className="mt-1.5">
+                      <StatusBadge label={pStatus.label} variant={pStatus.variant} />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <ScrollBar orientation="horizontal" />
+          </ScrollArea>
+        </div>
+      )}
+
+      <div className="p-4 lg:p-6 pt-0 lg:pt-0 space-y-4">
         {/* ============ EXTRAS DE CONT — separate table ============ */}
         {statements.length > 0 && (
           <Card className="border border-blue-200 shadow-none bg-blue-50/30">

@@ -15,7 +15,6 @@ import {
   LogOut,
   ChevronLeft,
   Menu,
-  History,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useState } from "react";
@@ -47,7 +46,6 @@ const clientNav: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { label: "Încarcă documente", href: "/dashboard/upload", icon: Upload },
   { label: "Facturi", href: "/dashboard/invoices", icon: FileText },
-  { label: "Istoric", href: "/dashboard/history", icon: History },
   { label: "Notificări", href: "/dashboard/notifications", icon: Bell },
   { label: "Setări", href: "/dashboard/settings", icon: Settings },
 ];
