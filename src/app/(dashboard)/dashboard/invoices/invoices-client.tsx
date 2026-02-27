@@ -31,7 +31,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Eye, Download, Trash2, Loader2, Upload, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
-import { deleteInvoice, uploadInvoice } from "@/lib/actions/invoices";
+import { deleteInvoice, deleteAllInvoices, uploadInvoice } from "@/lib/actions/invoices";
 import { updateTransactionMatch, deleteStatement, deleteTransaction } from "@/lib/actions/statements";
 import { useRouter } from "next/navigation";
 
@@ -93,6 +93,8 @@ export function InvoicesClient({
   } | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [alsoDeleteInvoices, setAlsoDeleteInvoices] = useState(false);
+  const [showDeleteAll, setShowDeleteAll] = useState(false);
+  const [deletingAll, setDeletingAll] = useState(false);
   const [uploadingTxId, setUploadingTxId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingTxRef = useRef<Record<string, unknown> | null>(null);
@@ -157,6 +159,19 @@ export function InvoicesClient({
     setDeleting(false);
     setDeleteTarget(null);
     setAlsoDeleteInvoices(false);
+  }
+
+  async function handleDeleteAll() {
+    setDeletingAll(true);
+    const result = await deleteAllInvoices(companyId, periodId);
+    if (result.error) {
+      toast.error(`Eroare: ${result.error}`);
+    } else {
+      toast.success(`${result.count} facturi au fost sterse`);
+      router.refresh();
+    }
+    setDeletingAll(false);
+    setShowDeleteAll(false);
   }
 
   // Upload invoice for unmatched transaction
@@ -425,7 +440,7 @@ export function InvoicesClient({
 
         {/* ============ FACTURI — invoices + lipsa ============ */}
         <Card className="border border-border shadow-none">
-          <CardHeader className="px-4 py-3 border-b">
+          <CardHeader className="px-4 py-3 border-b flex flex-row items-center justify-between">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <FileText className="size-4 text-muted-foreground" />
               Facturi
@@ -435,6 +450,17 @@ export function InvoicesClient({
                 </span>
               )}
             </CardTitle>
+            {filteredInvoices.length > 0 && (
+              <Button
+                variant="destructive"
+                size="sm"
+                className="h-7 text-xs gap-1.5"
+                onClick={() => setShowDeleteAll(true)}
+              >
+                <Trash2 className="size-3.5" />
+                Sterge toate facturile
+              </Button>
+            )}
           </CardHeader>
           <CardContent className="p-0">
             <Table>
@@ -742,6 +768,46 @@ export function InvoicesClient({
             >
               {deleting && <Loader2 className="size-4 animate-spin mr-2" />}
               Sterge definitiv
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* Delete ALL invoices dialog */}
+      <Dialog open={showDeleteAll} onOpenChange={setShowDeleteAll}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-red-600">
+              Sterge TOATE facturile?
+            </DialogTitle>
+            <DialogDescription>
+              Aceasta actiune va sterge definitiv toate cele{" "}
+              <span className="font-semibold text-foreground">
+                {filteredInvoices.length} facturi
+              </span>{" "}
+              incarcate pentru aceasta perioada. Fisierele din storage vor fi
+              sterse, iar tranzactiile vor reveni la statusul &quot;Lipsa&quot;.
+              <br />
+              <br />
+              <span className="font-semibold text-red-600">
+                Aceasta actiune nu poate fi anulata!
+              </span>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowDeleteAll(false)}
+              disabled={deletingAll}
+            >
+              Anuleaza
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteAll}
+              disabled={deletingAll}
+            >
+              {deletingAll && <Loader2 className="size-4 animate-spin mr-2" />}
+              Da, sterge toate
             </Button>
           </DialogFooter>
         </DialogContent>

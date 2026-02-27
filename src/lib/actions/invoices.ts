@@ -117,3 +117,46 @@ export async function deleteInvoice(id: string) {
 
   return { success: true };
 }
+
+export async function deleteAllInvoices(companyId: string, periodId: string) {
+  const serviceClient = createServiceClient();
+
+  // Get all invoices for this company/period for storage cleanup
+  const { data: invoices } = await serviceClient
+    .from("invoices")
+    .select("id, file_url")
+    .eq("company_id", companyId)
+    .eq("period_id", periodId);
+
+  if (!invoices || invoices.length === 0) {
+    return { success: true, count: 0 };
+  }
+
+  const invoiceIds = invoices.map((inv) => inv.id);
+
+  // Unlink all matched transactions first
+  await serviceClient
+    .from("bank_transactions")
+    .update({ matched_invoice_id: null, match_status: "unmatched" })
+    .in("matched_invoice_id", invoiceIds);
+
+  // Delete all invoice records
+  const { error } = await serviceClient
+    .from("invoices")
+    .delete()
+    .eq("company_id", companyId)
+    .eq("period_id", periodId);
+
+  if (error) return { error: error.message };
+
+  // Delete storage files
+  const filePaths = invoices
+    .map((inv) => inv.file_url)
+    .filter((url) => url && url.length > 0 && url !== "" && url !== "[eFactura]");
+
+  if (filePaths.length > 0) {
+    await serviceClient.storage.from("documents").remove(filePaths);
+  }
+
+  return { success: true, count: invoices.length };
+}
