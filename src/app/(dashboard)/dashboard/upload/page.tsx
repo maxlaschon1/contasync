@@ -51,6 +51,7 @@ import {
   insertTransactions,
   deleteTransaction as deleteTransactionAction,
   deleteStatement as deleteStatementAction,
+  updateTransactionMatch,
 } from "@/lib/actions/statements";
 import {
   uploadInvoice,
@@ -555,6 +556,12 @@ export default function UploadPage() {
           return;
         }
 
+        // Link transaction to invoice in DB
+        const txObj = detectedTransactions.find((t) => t.id === txId);
+        if (txObj?.dbId && result.data?.id) {
+          await updateTransactionMatch(txObj.dbId, result.data.id);
+        }
+
         // Mark as uploaded
         setDetectedTransactions((prev) =>
           prev.map((t) =>
@@ -924,6 +931,13 @@ export default function UploadPage() {
 
         if (!uploadResult.error) {
           matchedCount++;
+
+          // Link transaction to invoice in DB
+          const txObj = detectedTransactions.find((t) => t.id === tx.id);
+          if (txObj?.dbId && uploadResult.data?.id) {
+            await updateTransactionMatch(txObj.dbId, uploadResult.data.id);
+          }
+
           setDetectedTransactions((prev) =>
             prev.map((t) =>
               t.id === tx.id
@@ -1005,6 +1019,12 @@ export default function UploadPage() {
     if (result.error) {
       toast.error("Eroare la asocierea facturii");
       return;
+    }
+
+    // Link transaction to invoice in DB
+    const txObj = detectedTransactions.find((t) => t.id === txId);
+    if (txObj?.dbId && result.data?.id) {
+      await updateTransactionMatch(txObj.dbId, result.data.id);
     }
 
     // Update transaction state
