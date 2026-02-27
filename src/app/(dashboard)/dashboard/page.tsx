@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { FileText, Receipt, Bell, Upload, CheckCircle2, AlertCircle } from "lucide-react";
+import { FileText, Receipt, Bell, Upload, CheckCircle2, AlertCircle, ArrowRight } from "lucide-react";
 import { DashboardHeader } from "@/components/contasync/DashboardHeader";
 import { StatCard } from "@/components/contasync/StatCard";
 import { StatusBadge } from "@/components/contasync/StatusBadge";
@@ -10,11 +10,12 @@ import { cn } from "@/lib/utils";
 import { getProfile } from "@/lib/actions/auth";
 import { getCurrentPeriod, getPeriodHistory } from "@/lib/actions/periods";
 import { getBankAccounts } from "@/lib/actions/bank-accounts";
-import { getStatements } from "@/lib/actions/statements";
+import { getStatements, getUnmatchedTransactions } from "@/lib/actions/statements";
 import { getInvoices } from "@/lib/actions/invoices";
 import { getUnreadCount } from "@/lib/actions/notifications";
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
+import { DeleteStatementButton } from "./dashboard-actions";
 
 const MONTHS_RO = [
   "Ianuarie", "Februarie", "Martie", "Aprilie", "Mai", "Iunie",
@@ -29,14 +30,12 @@ const statusConfig = {
 };
 
 export default async function DashboardPage() {
-  // Auth is checked in layout — getProfile now always returns data for authenticated users
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
   const profile = await getProfile();
 
-  // Get user's company
   const { data: companyUser } = await supabase
     .from("company_users")
     .select("company_id, companies(*)")
@@ -66,7 +65,6 @@ export default async function DashboardPage() {
 
   const companyId = company.id;
 
-  // Fetch all data in parallel
   const [
     periodResult,
     bankAccountsResult,
@@ -83,20 +81,21 @@ export default async function DashboardPage() {
   const bankAccounts = bankAccountsResult.data || [];
   const history = historyResult.data || [];
 
-  // Fetch statements and invoices for current period
-  const [statementsResult, invoicesResult] = await Promise.all([
+  const [statementsResult, invoicesResult, unmatchedResult] = await Promise.all([
     currentPeriod ? getStatements(companyId, currentPeriod.id) : { data: [] },
     currentPeriod ? getInvoices(companyId, { periodId: currentPeriod.id }) : { data: [] },
+    currentPeriod ? getUnmatchedTransactions(companyId, currentPeriod.id) : { data: [] },
   ]);
 
   const statements = statementsResult.data || [];
   const invoices = invoicesResult.data || [];
+  const unmatchedCount = (unmatchedResult.data || []).length;
 
-  // Calculate stats
+  // Stats
   const statementsUploaded = statements.length;
   const statementsRequired = bankAccounts.length;
-  const invoicesUploaded = invoices.filter((inv: Record<string, unknown>) => inv.status !== "missing").length;
-  const invoicesTotal = invoices.length;
+  const invoicesCount = invoices.length;
+  const totalDocuments = invoicesCount + unmatchedCount;
 
   // Helper: find statement for a bank account
   function getStatementForAccount(bankAccountId: string) {
@@ -106,11 +105,10 @@ export default async function DashboardPage() {
   }
 
   const now = new Date();
-  const currentMonth = now.getMonth(); // 0-indexed
+  const currentMonth = now.getMonth();
   const currentYear = now.getFullYear();
   const subtitle = `${MONTHS_RO[currentMonth]} ${currentYear}`;
 
-  // Get recent history (last 5 completed/pending months, excluding current)
   const pastHistory = history
     .filter(
       (m: Record<string, unknown>) =>
@@ -139,7 +137,7 @@ export default async function DashboardPage() {
           />
           <StatCard
             label="Facturi"
-            value={`${invoicesUploaded}/${invoicesTotal}`}
+            value={`${invoicesCount}/${totalDocuments}`}
             icon={Receipt}
             iconColor="text-amber-600"
             iconBg="bg-amber-50"
@@ -195,26 +193,20 @@ export default async function DashboardPage() {
                           </p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
                         {isUploaded ? (
                           <>
                             <span className="text-xs text-muted-foreground max-sm:hidden">
                               {new Date(statement.uploaded_at as string).toLocaleDateString("ro-RO")}
                             </span>
                             <StatusBadge label="Incarcat" variant="success" />
+                            <DeleteStatementButton
+                              statementId={statement.id as string}
+                              label={`${account.bank_name as string} - ${statement.file_name as string}`}
+                            />
                           </>
                         ) : (
-                          <>
-                            <span className="text-xs text-muted-foreground max-sm:hidden">
-                              &mdash;
-                            </span>
-                            <StatusBadge label="Lipsa" variant="danger" />
-                            <Link href="/dashboard/upload">
-                              <Button variant="outline" size="sm" className="text-xs h-7">
-                                Incarca extras
-                              </Button>
-                            </Link>
-                          </>
+                          <StatusBadge label="Lipsa" variant="danger" />
                         )}
                       </div>
                     </div>
@@ -225,80 +217,38 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* Required Invoices Section */}
+        {/* Invoices Summary */}
         <Card className="border border-border shadow-none">
-          <CardHeader className="pb-3">
+          <CardContent className="p-4">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-base font-semibold">
-                Facturi necesare (din analiza extras)
-              </CardTitle>
+              <div className="flex items-center gap-3">
+                <div className="size-9 rounded-lg bg-amber-50 flex items-center justify-center">
+                  <Receipt className="size-4 text-amber-600" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold">Facturi luna curenta</p>
+                  <p className="text-xs text-muted-foreground">
+                    {invoicesCount} incarcate
+                    {unmatchedCount > 0 && (
+                      <span className="text-red-500 font-medium">
+                        {" "}&middot; {unmatchedCount} lipsa
+                      </span>
+                    )}
+                    {unmatchedCount === 0 && invoicesCount > 0 && (
+                      <span className="text-emerald-600 font-medium">
+                        {" "}&middot; Complet
+                      </span>
+                    )}
+                  </p>
+                </div>
+              </div>
               <Link href="/dashboard/invoices">
-                <Button variant="ghost" size="sm" className="text-xs text-primary">
-                  Vezi toate
+                <Button variant="outline" size="sm" className="gap-1.5 text-xs">
+                  Vezi facturi
+                  <ArrowRight className="size-3.5" />
                 </Button>
               </Link>
             </div>
-          </CardHeader>
-          <CardContent className="pt-0">
-            {invoices.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                Nu exista facturi pentru luna curenta.
-              </p>
-            ) : (
-              <div className="divide-y">
-                {invoices.map((invoice: Record<string, unknown>) => {
-                  const statusMap: Record<string, { label: string; variant: "success" | "info" | "danger" }> = {
-                    verified: { label: "Verificat", variant: "success" },
-                    uploaded: { label: "Incarcat", variant: "info" },
-                    validated: { label: "Validat", variant: "success" },
-                    pending: { label: "In asteptare", variant: "info" },
-                    missing: { label: "Lipsa", variant: "danger" },
-                    rejected: { label: "Respins", variant: "danger" },
-                  };
-                  const invoiceStatus = statusMap[invoice.status as string] || statusMap.pending;
-
-                  return (
-                    <div
-                      key={invoice.id as string}
-                      className="flex items-center justify-between py-3 first:pt-0 last:pb-0"
-                    >
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="size-9 rounded-lg bg-muted flex items-center justify-center shrink-0">
-                          <Receipt className="size-4 text-muted-foreground" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium truncate">
-                            {(invoice.invoice_number as string) || "Necunoscuta"}{" "}
-                            <span className="text-muted-foreground font-normal">
-                              — {(invoice.partner_name as string) || (invoice.supplier_name as string) || (invoice.client_name as string) || ""}
-                            </span>
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {((invoice.total_amount as number) || (invoice.total as number) || 0).toLocaleString("ro-RO", {
-                              minimumFractionDigits: 2,
-                            })}{" "}
-                            {(invoice.currency as string) || "RON"}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-3 shrink-0">
-                        <StatusBadge
-                          label={invoiceStatus.label}
-                          variant={invoiceStatus.variant}
-                        />
-                        {invoice.status === "missing" && (
-                          <Link href="/dashboard/upload">
-                            <Button variant="outline" size="sm" className="text-xs h-7">
-                              Incarca factura
-                            </Button>
-                          </Link>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
           </CardContent>
         </Card>
 
@@ -326,7 +276,6 @@ export default async function DashboardPage() {
               </div>
               {/* Past months */}
               {pastHistory.map((m: Record<string, unknown>) => {
-                const cfg = statusConfig[(m.status as keyof typeof statusConfig) || "open"];
                 return (
                   <div
                     key={`${m.month}-${m.year}`}
