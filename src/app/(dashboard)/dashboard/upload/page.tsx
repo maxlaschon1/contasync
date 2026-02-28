@@ -195,6 +195,13 @@ export default function UploadPage() {
   >({});
   const bulkFilesRef = useRef<Map<number, File>>(new Map());
 
+  // Bulk import — detailed phase tracking
+  const [bulkPhase, setBulkPhase] = useState<
+    "uploading" | "scanning" | "matching" | "saving" | "done"
+  >("uploading");
+  const [bulkCurrentFile, setBulkCurrentFile] = useState("");
+  const [bulkSavedCount, setBulkSavedCount] = useState(0);
+
   // Manual invoice add
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [manualType, setManualType] = useState<"received" | "issued">(
@@ -305,6 +312,8 @@ export default function UploadPage() {
     setUnmatchedInvoices([]);
     setBulkMatchedCount(0);
     setAssignSelections({});
+    setBulkSavedCount(0);
+    setBulkCurrentFile("");
     bulkFilesRef.current.clear();
   }
 
@@ -778,7 +787,10 @@ export default function UploadPage() {
     if (files.length === 0 || !company || !period) return;
 
     setBulkState("processing");
+    setBulkPhase("uploading");
     setBulkProgress({ current: 0, total: files.length });
+    setBulkCurrentFile("");
+    setBulkSavedCount(0);
     bulkFilesRef.current.clear();
 
     const supabase = createClient();
@@ -788,6 +800,16 @@ export default function UploadPage() {
     const BATCH_SIZE = 3;
     for (let i = 0; i < files.length; i += BATCH_SIZE) {
       const batch = files.slice(i, i + BATCH_SIZE);
+
+      // Update phase: uploading for first half, scanning for second half
+      const progress = (i / files.length) * 100;
+      if (progress < 50) {
+        setBulkPhase("uploading");
+      } else {
+        setBulkPhase("scanning");
+      }
+      setBulkCurrentFile(batch[0].name);
+
       const batchResults = await Promise.all(
         batch.map(async (file, batchIdx) => {
           const globalIdx = i + batchIdx;
@@ -795,6 +817,7 @@ export default function UploadPage() {
 
           try {
             // Upload to storage
+            setBulkCurrentFile(file.name);
             const filePath = `${company.id}/${selectedYear}/${String(selectedMonth).padStart(2, "0")}/invoices/${Date.now()}_${globalIdx}_${file.name}`;
             const { data: uploadData, error: uploadError } =
               await supabase.storage.from("documents").upload(filePath, file);
@@ -875,6 +898,10 @@ export default function UploadPage() {
       });
     }
 
+    // Phase: Matching
+    setBulkPhase("matching");
+    setBulkCurrentFile("");
+
     // Debug: log scanned invoices before matching
     console.log("[Bulk] Scanned invoices:", scanned.length);
     for (const s of scanned) {
@@ -894,6 +921,9 @@ export default function UploadPage() {
     for (const r of matchResults) {
       console.log(`  ${r.invoice.fileName.substring(0, 40)} -> ${r.transaction ? r.transaction.description : "UNMATCHED"} (score: ${r.score})`);
     }
+
+    // Phase: Saving matched pairs
+    setBulkPhase("saving");
 
     // Process matched pairs: create invoice records
     let matchedCount = 0;
@@ -933,6 +963,8 @@ export default function UploadPage() {
 
         if (!uploadResult.error) {
           matchedCount++;
+          setBulkSavedCount(matchedCount);
+          setBulkCurrentFile(inv.fileName);
 
           // Link transaction to invoice in DB
           const txObj = detectedTransactions.find((t) => t.id === tx.id);
@@ -1636,27 +1668,125 @@ export default function UploadPage() {
                     />
                   )}
 
-                  {/* PROCESSING — Show progress */}
+                  {/* PROCESSING — Show detailed progress */}
                   {bulkState === "processing" && (
-                    <div className="space-y-4 py-4">
-                      <div className="flex items-center justify-center gap-3">
-                        <Sparkles className="size-5 text-blue-600 animate-pulse" />
-                        <p className="text-sm font-medium text-blue-700">
-                          Se scaneaza factura {bulkProgress.current} din{" "}
-                          {bulkProgress.total}...
-                        </p>
+                    <div className="py-6 space-y-6">
+                      {/* Main loading animation + phase message */}
+                      <div className="flex flex-col items-center gap-4">
+                        <div className="relative">
+                          <div className="size-16 rounded-full border-4 border-blue-100 flex items-center justify-center">
+                            <Loader2 className="size-8 text-blue-600 animate-spin" />
+                          </div>
+                          <Sparkles className="size-5 text-amber-500 absolute -top-1 -right-1 animate-pulse" />
+                        </div>
+
+                        <div className="text-center space-y-1">
+                          <p className="text-lg font-semibold text-foreground">
+                            {bulkPhase === "uploading" &&
+                              `Se incarca facturile... (${bulkProgress.current}/${bulkProgress.total})`}
+                            {bulkPhase === "scanning" &&
+                              `AI scaneaza facturile... (${bulkProgress.current}/${bulkProgress.total})`}
+                            {bulkPhase === "matching" &&
+                              "AI potriveste facturile cu tranzactiile..."}
+                            {bulkPhase === "saving" &&
+                              `Se salveaza rezultatele... (${bulkSavedCount} potrivite)`}
+                          </p>
+                          <p className="text-sm text-muted-foreground">
+                            {bulkPhase === "uploading" &&
+                              "Fisierele sunt incarcate in cloud pentru procesare"}
+                            {bulkPhase === "scanning" &&
+                              "AI citeste continutul fiecarei facturi si extrage datele"}
+                            {bulkPhase === "matching" &&
+                              "Algoritmul compara numele furnizorilor si sumele din facturi cu tranzactiile bancare"}
+                            {bulkPhase === "saving" &&
+                              "Facturile potrivite sunt salvate si asociate cu tranzactiile"}
+                          </p>
+                        </div>
                       </div>
-                      <Progress
-                        value={
-                          bulkProgress.total > 0
-                            ? (bulkProgress.current / bulkProgress.total) * 100
-                            : 0
-                        }
-                      />
-                      <p className="text-xs text-center text-muted-foreground">
-                        AI citeste fiecare factura si o potriveste cu
-                        tranzactia corespunzatoare
-                      </p>
+
+                      {/* Progress bar */}
+                      <div className="space-y-2">
+                        <Progress
+                          value={
+                            bulkPhase === "matching"
+                              ? 75
+                              : bulkPhase === "saving"
+                                ? 90
+                                : bulkProgress.total > 0
+                                  ? (bulkProgress.current / bulkProgress.total) * 70
+                                  : 0
+                          }
+                        />
+                        {bulkCurrentFile && (
+                          <p className="text-xs text-center text-muted-foreground truncate max-w-md mx-auto">
+                            {bulkPhase === "saving" ? "Salvat: " : "Procesare: "}
+                            {bulkCurrentFile}
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Step indicators */}
+                      <div className="flex items-center justify-center gap-2 text-xs">
+                        <span className={`flex items-center gap-1 px-2.5 py-1 rounded-full ${
+                          bulkPhase === "uploading"
+                            ? "bg-blue-100 text-blue-700 font-medium"
+                            : "bg-emerald-100 text-emerald-700"
+                        }`}>
+                          {bulkPhase !== "uploading" ? (
+                            <CheckCircle2 className="size-3" />
+                          ) : (
+                            <Loader2 className="size-3 animate-spin" />
+                          )}
+                          Incarcare
+                        </span>
+                        <ArrowRight className="size-3 text-muted-foreground" />
+                        <span className={`flex items-center gap-1 px-2.5 py-1 rounded-full ${
+                          bulkPhase === "scanning"
+                            ? "bg-blue-100 text-blue-700 font-medium"
+                            : bulkPhase === "uploading"
+                              ? "bg-muted text-muted-foreground"
+                              : "bg-emerald-100 text-emerald-700"
+                        }`}>
+                          {bulkPhase !== "uploading" && bulkPhase !== "scanning" ? (
+                            <CheckCircle2 className="size-3" />
+                          ) : bulkPhase === "scanning" ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <span className="size-3" />
+                          )}
+                          Scanare AI
+                        </span>
+                        <ArrowRight className="size-3 text-muted-foreground" />
+                        <span className={`flex items-center gap-1 px-2.5 py-1 rounded-full ${
+                          bulkPhase === "matching"
+                            ? "bg-blue-100 text-blue-700 font-medium"
+                            : bulkPhase === "saving"
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-muted text-muted-foreground"
+                        }`}>
+                          {bulkPhase === "saving" ? (
+                            <CheckCircle2 className="size-3" />
+                          ) : bulkPhase === "matching" ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <span className="size-3" />
+                          )}
+                          Potrivire
+                        </span>
+                        <ArrowRight className="size-3 text-muted-foreground" />
+                        <span className={`flex items-center gap-1 px-2.5 py-1 rounded-full ${
+                          bulkPhase === "saving"
+                            ? "bg-blue-100 text-blue-700 font-medium"
+                            : "bg-muted text-muted-foreground"
+                        }`}>
+                          {bulkPhase === "saving" ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <span className="size-3" />
+                          )}
+                          Salvare
+                        </span>
+                      </div>
                     </div>
                   )}
 
@@ -1770,6 +1900,8 @@ export default function UploadPage() {
                           setUnmatchedInvoices([]);
                           setBulkMatchedCount(0);
                           setAssignSelections({});
+                          setBulkSavedCount(0);
+                          setBulkCurrentFile("");
                         }}
                       >
                         Importa mai multe facturi
@@ -1964,6 +2096,8 @@ export default function UploadPage() {
                   setUnmatchedInvoices([]);
                   setBulkMatchedCount(0);
                   setAssignSelections({});
+                  setBulkSavedCount(0);
+                  setBulkCurrentFile("");
                   bulkFilesRef.current.clear();
                 }}
               >
