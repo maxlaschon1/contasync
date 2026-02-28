@@ -43,6 +43,8 @@ import {
   AlertCircle,
   CalendarDays,
   Trash2,
+  Building2,
+  Send,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -57,7 +59,7 @@ import {
   uploadInvoice,
   deleteInvoice as deleteInvoiceAction,
 } from "@/lib/actions/invoices";
-import { getOrCreatePeriod } from "@/lib/actions/periods";
+import { getOrCreatePeriod, updatePeriodStatus } from "@/lib/actions/periods";
 import {
   matchInvoicesToTransactions,
   type ScannedInvoice,
@@ -157,8 +159,9 @@ export default function UploadPage() {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [periodLoading, setPeriodLoading] = useState(false);
 
-  // Step tracking
-  const [step, setStep] = useState<1 | 2>(1);
+  // Step tracking: 1=period, 2=bank, 3=statement, 4=invoices
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const [isConfirming, setIsConfirming] = useState(false);
 
   // Step 1: Statement upload
   const [selectedAccount, setSelectedAccount] = useState("");
@@ -277,6 +280,20 @@ export default function UploadPage() {
     loadData();
   }, []);
 
+  // Auto-advance: when period loads, go to step 2
+  useEffect(() => {
+    if (period && step === 1) {
+      setStep(2);
+    }
+  }, [period, step]);
+
+  // Auto-advance: when bank account is selected, go to step 3
+  useEffect(() => {
+    if (selectedAccount && step === 2) {
+      setStep(3);
+    }
+  }, [selectedAccount, step]);
+
   // Check if all transactions have invoices uploaded
   useEffect(() => {
     if (detectedTransactions.length > 0) {
@@ -302,7 +319,8 @@ export default function UploadPage() {
     setPeriodLoading(false);
 
     // Reset upload state when period changes
-    setStep(1);
+    setStep(2);
+    setSelectedAccount("");
     setDetectedTransactions([]);
     setCurrentStatementId(null);
     setStatementFiles([]);
@@ -438,13 +456,13 @@ export default function UploadPage() {
         setOcrStatus(
           `AI a gasit ${detected.length} tranzactii. Incarca facturile corespunzatoare.`
         );
-        setStep(2);
+        setStep(4);
       } else {
         setOcrStatus(
           "Nu s-au gasit tranzactii in extras. Poti adauga facturi manual."
         );
         setDetectedTransactions([]);
-        setStep(2);
+        setStep(4);
       }
 
       setStatementUploading(false);
@@ -770,7 +788,7 @@ export default function UploadPage() {
     }
 
     // Reset everything
-    setStep(1);
+    setStep(3);
     setDetectedTransactions([]);
     setCurrentStatementId(null);
     setStatementFiles([]);
@@ -1227,15 +1245,54 @@ export default function UploadPage() {
   }
 
   // ============================================
+  // CONFIRM & NOTIFY ACCOUNTANT
+  // ============================================
+  async function handleConfirm() {
+    if (!period || !company) return;
+
+    setIsConfirming(true);
+    try {
+      // Update period status to pending_review
+      await updatePeriodStatus(period.id, "pending_review");
+
+      // Send notification to accountant
+      try {
+        await fetch("/api/notifications/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            companyName: company.name,
+            email: "", // Will use the accountant's email from the company
+            missingDocs: [],
+          }),
+        });
+      } catch {
+        // Notification sending is best-effort
+      }
+
+      toast.success("Documentele au fost confirmate! Contabila va fi notificata.");
+      router.push(`/dashboard/invoices?year=${selectedYear}&month=${selectedMonth}`);
+    } catch (err) {
+      console.error("[Confirm] Error:", err);
+      toast.error("Eroare la confirmare. Incearca din nou.");
+    }
+    setIsConfirming(false);
+  }
+
+  // ============================================
   // RENDER
   // ============================================
+
+  // Computed values for render
+  const uploadedCount = detectedTransactions.filter((t) => t.invoiceUploaded).length;
+  const totalTxCount = detectedTransactions.length;
 
   if (loading) {
     return (
       <>
         <DashboardHeader title="Incarca documente" userName={userName} />
         <div className="p-4 lg:p-6 flex items-center justify-center min-h-[50vh]">
-          <Loader2 className="size-6 animate-spin text-muted-foreground" />
+          <Loader2 className="size-8 animate-spin text-muted-foreground" />
         </div>
       </>
     );
@@ -1249,112 +1306,189 @@ export default function UploadPage() {
         userName={userName}
       />
 
-      <div className="p-4 lg:p-6 space-y-6">
-        {/* ==================== PERIOD SELECTOR ==================== */}
-        <Card className="border-primary/20 bg-primary/5">
-          <CardContent className="py-4">
-            <div className="flex flex-wrap items-center gap-4">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-lg bg-primary/10">
-                  <CalendarDays className="size-5 text-primary" />
-                </div>
-                <span className="text-sm font-medium">Perioada:</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Select
-                  value={String(selectedMonth)}
-                  onValueChange={(v) =>
-                    handlePeriodChange(Number(v), selectedYear)
-                  }
-                >
-                  <SelectTrigger className="w-40 bg-white">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {MONTHS_RO.map((m, i) => (
-                      <SelectItem key={i} value={String(i + 1)}>
-                        {m}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={String(selectedYear)}
-                  onValueChange={(v) =>
-                    handlePeriodChange(selectedMonth, Number(v))
-                  }
-                >
-                  <SelectTrigger className="w-24 bg-white">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {YEARS.map((y) => (
-                      <SelectItem key={y} value={String(y)}>
-                        {y}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {periodLoading && (
-                <Loader2 className="size-4 animate-spin text-muted-foreground" />
+      <div className="p-4 lg:p-6 space-y-5 pb-32">
+        {/* ==================== STEP INDICATOR BAR ==================== */}
+        <div className="flex items-center gap-1 p-2 bg-slate-50 rounded-xl border overflow-x-auto">
+          {[
+            { num: 1, label: "Perioada" },
+            { num: 2, label: "Cont bancar" },
+            { num: 3, label: "Extras de cont" },
+            { num: 4, label: "Facturi" },
+            { num: 5, label: "Confirmare" },
+          ].map((s, i) => (
+            <div key={s.num} className="flex items-center gap-1 shrink-0">
+              {i > 0 && (
+                <div
+                  className={`w-6 h-0.5 ${step > s.num - 1 ? "bg-emerald-400" : "bg-slate-200"}`}
+                />
               )}
+              <div
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                  step > s.num
+                    ? "text-emerald-700"
+                    : step === s.num
+                      ? "bg-primary text-white shadow-sm"
+                      : "text-slate-400"
+                }`}
+              >
+                {step > s.num ? (
+                  <CheckCircle2 className="size-4" />
+                ) : (
+                  <span
+                    className={`size-5 rounded-full flex items-center justify-center text-xs font-bold ${
+                      step === s.num
+                        ? "bg-white/20"
+                        : "bg-slate-200 text-slate-500"
+                    }`}
+                  >
+                    {s.num}
+                  </span>
+                )}
+                <span className="max-sm:hidden">{s.label}</span>
+              </div>
             </div>
-          </CardContent>
-        </Card>
-
-        {/* Step indicator */}
-        <div className="flex items-center gap-3">
-          <div
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${step === 1 ? "bg-primary text-primary-foreground" : "bg-emerald-100 text-emerald-700"}`}
-          >
-            {step > 1 ? (
-              <CheckCircle2 className="size-4" />
-            ) : (
-              <span className="size-5 rounded-full bg-white/20 flex items-center justify-center text-xs">
-                1
-              </span>
-            )}
-            Extras de cont
-          </div>
-          <ArrowRight className="size-4 text-muted-foreground" />
-          <div
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${step === 2 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
-          >
-            <span className="size-5 rounded-full bg-white/20 flex items-center justify-center text-xs">
-              2
-            </span>
-            Facturi
-          </div>
+          ))}
         </div>
 
-        {/* ==================== STEP 1 ==================== */}
-        {step === 1 && (
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-lg bg-blue-50">
-                  <FileText className="size-4 text-blue-600" />
-                </div>
-                <div>
-                  <CardTitle className="text-base">
-                    Pasul 1: Incarca extrasul de cont
-                  </CardTitle>
-                  <CardDescription>
-                    AI va citi extrasul si va detecta automat tranzactiile
-                  </CardDescription>
-                </div>
+        {/* ==================== STEP 1: PERIOADA ==================== */}
+        <div
+          className={`rounded-xl border-2 p-5 transition-all ${
+            step === 1
+              ? "border-blue-300 bg-blue-50/60"
+              : "border-emerald-200 bg-emerald-50/30"
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <span
+              className={`size-9 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${
+                step > 1 ? "bg-emerald-500 text-white" : "bg-blue-600 text-white"
+              }`}
+            >
+              {step > 1 ? <CheckCircle2 className="size-5" /> : "1"}
+            </span>
+            <div className="flex-1">
+              <h3 className="text-lg font-semibold">Selecteaza perioada</h3>
+              {step > 1 && (
+                <p className="text-sm text-emerald-600 font-medium">
+                  {MONTHS_RO[selectedMonth - 1]} {selectedYear}
+                </p>
+              )}
+            </div>
+            {step > 1 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                onClick={() => setStep(1)}
+              >
+                Schimba
+              </Button>
+            )}
+          </div>
+          {step === 1 && (
+            <div className="flex flex-wrap items-center gap-3 mt-4 ml-12">
+              <Select
+                value={String(selectedMonth)}
+                onValueChange={(v) =>
+                  handlePeriodChange(Number(v), selectedYear)
+                }
+              >
+                <SelectTrigger className="w-44 h-12 text-base bg-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MONTHS_RO.map((m, i) => (
+                    <SelectItem key={i} value={String(i + 1)}>
+                      {m}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select
+                value={String(selectedYear)}
+                onValueChange={(v) =>
+                  handlePeriodChange(selectedMonth, Number(v))
+                }
+              >
+                <SelectTrigger className="w-28 h-12 text-base bg-white">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {YEARS.map((y) => (
+                    <SelectItem key={y} value={String(y)}>
+                      {y}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {periodLoading && (
+                <Loader2 className="size-5 animate-spin text-muted-foreground" />
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ==================== STEP 2: CONT BANCAR ==================== */}
+        {step >= 2 && (
+          <div
+            className={`rounded-xl border-2 p-5 transition-all ${
+              step === 2
+                ? "border-indigo-300 bg-indigo-50/60"
+                : step > 2
+                  ? "border-emerald-200 bg-emerald-50/30"
+                  : "border-slate-200 bg-slate-50/30"
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <span
+                className={`size-9 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${
+                  step > 2
+                    ? "bg-emerald-500 text-white"
+                    : step === 2
+                      ? "bg-indigo-600 text-white"
+                      : "bg-slate-300 text-white"
+                }`}
+              >
+                {step > 2 ? <CheckCircle2 className="size-5" /> : "2"}
+              </span>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold">Selecteaza contul bancar</h3>
+                {step > 2 && selectedAccount && (
+                  <p className="text-sm text-emerald-600 font-medium">
+                    {bankAccounts.find((a) => a.id === selectedAccount)?.bank_name}{" "}
+                    —{" "}
+                    {bankAccounts.find((a) => a.id === selectedAccount)?.currency}{" "}
+                    (...
+                    {bankAccounts
+                      .find((a) => a.id === selectedAccount)
+                      ?.iban.slice(-4)}
+                    )
+                  </p>
+                )}
               </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="bank-account">Cont bancar</Label>
+              {step > 2 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground"
+                  onClick={() => {
+                    setStep(2);
+                    setSelectedAccount("");
+                  }}
+                >
+                  Schimba
+                </Button>
+              )}
+            </div>
+            {step === 2 && (
+              <div className="mt-4 ml-12 max-w-md">
                 <Select
                   value={selectedAccount}
                   onValueChange={setSelectedAccount}
                 >
-                  <SelectTrigger id="bank-account">
-                    <SelectValue placeholder="Selecteaza contul bancar" />
+                  <SelectTrigger className="h-12 text-base bg-white">
+                    <Building2 className="size-4 text-muted-foreground mr-2 shrink-0" />
+                    <SelectValue placeholder="Alege contul bancar..." />
                   </SelectTrigger>
                   <SelectContent>
                     {bankAccounts.map((account) => (
@@ -1365,75 +1499,150 @@ export default function UploadPage() {
                     ))}
                   </SelectContent>
                 </Select>
+                {!selectedAccount && (
+                  <p className="text-sm text-muted-foreground mt-2">
+                    Selecteaza contul bancar pentru a continua
+                  </p>
+                )}
               </div>
-
-              <FileUpload
-                accept=".pdf"
-                multiple={false}
-                label="Trage extrasul PDF aici sau click pentru a selecta"
-                sublabel="PDF — max. 10 MB"
-                onFilesSelected={(files) => setStatementFiles(files)}
-              />
-
-              {statementError && (
-                <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 border border-red-200">
-                  <AlertCircle className="size-4 text-red-600 shrink-0" />
-                  <p className="text-sm text-red-700">{statementError}</p>
-                </div>
-              )}
-
-              {ocrStatus && (
-                <div className="flex items-center gap-2 p-3 rounded-lg bg-blue-50 border border-blue-200">
-                  {statementUploading ? (
-                    <Sparkles className="size-4 text-blue-600 shrink-0 animate-pulse" />
-                  ) : (
-                    <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
-                  )}
-                  <p className="text-sm text-blue-700">{ocrStatus}</p>
-                </div>
-              )}
-
-              <div className="flex gap-3">
-                <Button
-                  className="flex-1"
-                  disabled={
-                    !selectedAccount ||
-                    statementFiles.length === 0 ||
-                    statementUploading ||
-                    !period
-                  }
-                  onClick={handleStatementUpload}
-                >
-                  {statementUploading ? (
-                    <>
-                      <Loader2 className="size-4 animate-spin mr-2" />
-                      AI proceseaza...
-                    </>
-                  ) : (
-                    <>
-                      <Upload className="size-4 mr-2" />
-                      Incarca si analizeaza
-                    </>
-                  )}
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setStep(2);
-                    setDetectedTransactions([]);
-                  }}
-                >
-                  Sari peste
-                  <ArrowRight className="size-4 ml-1" />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+            )}
+          </div>
         )}
 
-        {/* ==================== STEP 2 ==================== */}
-        {step === 2 && (
-          <div className="space-y-6">
+        {/* ==================== STEP 3: EXTRAS DE CONT ==================== */}
+        {step >= 3 && (
+          <div
+            className={`rounded-xl border-2 p-5 transition-all ${
+              step === 3
+                ? "border-amber-300 bg-amber-50/60"
+                : step > 3
+                  ? "border-emerald-200 bg-emerald-50/30"
+                  : "border-slate-200 bg-slate-50/30"
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <span
+                className={`size-9 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${
+                  step > 3
+                    ? "bg-emerald-500 text-white"
+                    : step === 3
+                      ? "bg-amber-600 text-white"
+                      : "bg-slate-300 text-white"
+                }`}
+              >
+                {step > 3 ? <CheckCircle2 className="size-5" /> : "3"}
+              </span>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold">Incarca extrasul de cont</h3>
+                {step > 3 && detectedTransactions.length > 0 && (
+                  <p className="text-sm text-emerald-600 font-medium">
+                    {detectedTransactions.length} tranzactii detectate
+                  </p>
+                )}
+                {step > 3 && detectedTransactions.length === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    Sarit — facturi adaugate manual
+                  </p>
+                )}
+              </div>
+            </div>
+            {step === 3 && (
+              <div className="mt-4 ml-12 space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  AI va citi extrasul si va detecta automat tranzactiile
+                </p>
+
+                <FileUpload
+                  accept=".pdf"
+                  multiple={false}
+                  label="Trage extrasul PDF aici sau click pentru a selecta"
+                  sublabel="PDF — max. 10 MB"
+                  onFilesSelected={(files) => setStatementFiles(files)}
+                />
+
+                {statementError && (
+                  <div className="flex items-center gap-2 p-3 rounded-lg bg-red-50 border border-red-200">
+                    <AlertCircle className="size-4 text-red-600 shrink-0" />
+                    <p className="text-sm text-red-700">{statementError}</p>
+                  </div>
+                )}
+
+                {ocrStatus && (
+                  <div className="flex items-center gap-2 p-4 rounded-lg bg-blue-50 border border-blue-200">
+                    {statementUploading ? (
+                      <Loader2 className="size-5 text-blue-600 shrink-0 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="size-5 text-emerald-600 shrink-0" />
+                    )}
+                    <p className="text-base font-medium text-blue-700">{ocrStatus}</p>
+                  </div>
+                )}
+
+                <div className="flex gap-3">
+                  <Button
+                    size="lg"
+                    className="flex-1 h-12 text-base"
+                    disabled={
+                      statementFiles.length === 0 || statementUploading || !period
+                    }
+                    onClick={handleStatementUpload}
+                  >
+                    {statementUploading ? (
+                      <>
+                        <Loader2 className="size-5 animate-spin mr-2" />
+                        AI proceseaza...
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="size-5 mr-2" />
+                        Incarca si analizeaza
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    className="h-12"
+                    onClick={() => {
+                      setStep(4);
+                      setDetectedTransactions([]);
+                    }}
+                  >
+                    Sari peste
+                    <ArrowRight className="size-4 ml-1" />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ==================== STEP 4: FACTURI ==================== */}
+        {step >= 4 && (
+          <div className="space-y-5">
+            {/* Step 4 header */}
+            <div className="rounded-xl border-2 border-violet-300 bg-violet-50/40 p-5">
+              <div className="flex items-center gap-3">
+                <span className="size-9 rounded-full bg-violet-600 text-white flex items-center justify-center text-sm font-bold shrink-0">
+                  4
+                </span>
+                <div className="flex-1">
+                  <h3 className="text-lg font-semibold">Incarca facturile</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {totalTxCount > 0
+                      ? `${uploadedCount} din ${totalTxCount} tranzactii au factura atasata`
+                      : "Adauga facturi manual sau importa in masa"}
+                  </p>
+                </div>
+                {totalTxCount > 0 && uploadedCount === totalTxCount && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-100 text-emerald-700 text-sm font-medium">
+                    <CheckCircle2 className="size-4" />
+                    Toate completate!
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* Detected transactions */}
             {detectedTransactions.length > 0 && (
               <Card>
@@ -1441,30 +1650,17 @@ export default function UploadPage() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <div className="p-2 rounded-lg bg-amber-50">
-                        <Receipt className="size-4 text-amber-600" />
+                        <Receipt className="size-5 text-amber-600" />
                       </div>
                       <div>
                         <CardTitle className="text-base">
-                          Tranzactii detectate (
-                          {
-                            detectedTransactions.filter(
-                              (t) => t.invoiceUploaded
-                            ).length
-                          }
-                          /{detectedTransactions.length} completate)
+                          Tranzactii detectate ({uploadedCount}/{totalTxCount} completate)
                         </CardTitle>
                         <CardDescription>
-                          Incarca factura PDF, bifeaza eFactura, sau sterge
-                          tranzactiile inutile
+                          Incarca factura PDF, bifeaza eFactura, sau sterge tranzactiile inutile
                         </CardDescription>
                       </div>
                     </div>
-                    {allUploaded && (
-                      <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-100 text-emerald-700 text-sm font-medium">
-                        <CheckCircle2 className="size-4" />
-                        Toate completate!
-                      </div>
-                    )}
                   </div>
                 </CardHeader>
                 <CardContent>
@@ -1480,7 +1676,6 @@ export default function UploadPage() {
                             : "bg-card border-border"
                         }`}
                       >
-                        {/* Transaction info */}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1">
                             <span
@@ -1508,9 +1703,7 @@ export default function UploadPage() {
                           </p>
                         </div>
 
-                        {/* Actions area */}
                         <div className="flex items-center gap-2 shrink-0">
-                          {/* eFactura checkbox — show when: not uploading, not processing, AND (not completed OR completed via eFactura) */}
                           {!tx.invoiceUploading &&
                             !tx.efacturaProcessing &&
                             (!tx.invoiceUploaded || tx.isEfactura) && (
@@ -1531,21 +1724,16 @@ export default function UploadPage() {
                               </div>
                             )}
 
-                          {/* Upload / Status area */}
                           <div className="w-48 shrink-0">
                             {tx.efacturaProcessing ? (
                               <div className="flex items-center gap-2 p-2.5 rounded-lg bg-violet-50 border border-violet-200">
                                 <Loader2 className="size-4 animate-spin text-violet-600" />
-                                <p className="text-xs text-violet-700">
-                                  Se proceseaza...
-                                </p>
+                                <p className="text-xs text-violet-700">Se proceseaza...</p>
                               </div>
                             ) : tx.isEfactura && tx.invoiceUploaded ? (
                               <div className="flex items-center gap-2 p-2.5 rounded-lg bg-violet-100 border border-violet-200">
                                 <CheckCircle2 className="size-4 text-violet-600" />
-                                <span className="text-xs font-medium text-violet-700">
-                                  eFactura
-                                </span>
+                                <span className="text-xs font-medium text-violet-700">eFactura</span>
                               </div>
                             ) : tx.invoiceUploaded ? (
                               <div className="flex items-center gap-2 p-2.5 rounded-lg bg-emerald-100 border border-emerald-200">
@@ -1561,9 +1749,7 @@ export default function UploadPage() {
                                   )}
                                 </div>
                                 <button
-                                  onClick={() =>
-                                    handleDeleteUploadedInvoice(tx.id)
-                                  }
+                                  onClick={() => handleDeleteUploadedInvoice(tx.id)}
                                   className="p-1 rounded hover:bg-red-100 transition-colors"
                                   title="Sterge factura"
                                 >
@@ -1574,9 +1760,7 @@ export default function UploadPage() {
                               <div className="flex items-center gap-2 p-2.5 rounded-lg bg-blue-50 border border-blue-200">
                                 <Loader2 className="size-4 animate-spin text-blue-600" />
                                 <p className="text-xs text-blue-700">
-                                  {tx.ocrProcessing
-                                    ? "AI citeste..."
-                                    : "Se incarca..."}
+                                  {tx.ocrProcessing ? "AI citeste..." : "Se incarca..."}
                                 </p>
                               </div>
                             ) : (
@@ -1592,10 +1776,7 @@ export default function UploadPage() {
                                   onChange={(e) => {
                                     const files = e.target.files;
                                     if (files && files[0]) {
-                                      handleTransactionInvoiceUpload(
-                                        tx,
-                                        files[0]
-                                      );
+                                      handleTransactionInvoiceUpload(tx, files[0]);
                                     }
                                   }}
                                 />
@@ -1603,7 +1784,6 @@ export default function UploadPage() {
                             )}
                           </div>
 
-                          {/* Delete transaction button */}
                           {!tx.invoiceUploading && !tx.efacturaProcessing && (
                             <Button
                               variant="ghost"
@@ -1620,7 +1800,6 @@ export default function UploadPage() {
                     ))}
                   </div>
 
-                  {/* Delete statement button */}
                   {currentStatementId && (
                     <div className="mt-6 pt-4 border-t">
                       <Button
@@ -1643,7 +1822,7 @@ export default function UploadPage() {
                 <CardHeader>
                   <div className="flex items-center gap-2">
                     <div className="p-2 rounded-lg bg-blue-50">
-                      <Layers className="size-4 text-blue-600" />
+                      <Layers className="size-5 text-blue-600" />
                     </div>
                     <div>
                       <CardTitle className="text-base">
@@ -1657,7 +1836,6 @@ export default function UploadPage() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  {/* IDLE — Show drop zone */}
                   {bulkState === "idle" && (
                     <FileUpload
                       accept=".pdf,.jpg,.png"
@@ -1668,10 +1846,8 @@ export default function UploadPage() {
                     />
                   )}
 
-                  {/* PROCESSING — Show detailed progress */}
                   {bulkState === "processing" && (
                     <div className="py-6 space-y-6">
-                      {/* Main loading animation + phase message */}
                       <div className="flex flex-col items-center gap-4">
                         <div className="relative">
                           <div className="size-16 rounded-full border-4 border-blue-100 flex items-center justify-center">
@@ -1679,7 +1855,6 @@ export default function UploadPage() {
                           </div>
                           <Sparkles className="size-5 text-amber-500 absolute -top-1 -right-1 animate-pulse" />
                         </div>
-
                         <div className="text-center space-y-1">
                           <p className="text-lg font-semibold text-foreground">
                             {bulkPhase === "uploading" &&
@@ -1697,14 +1872,12 @@ export default function UploadPage() {
                             {bulkPhase === "scanning" &&
                               "AI citeste continutul fiecarei facturi si extrage datele"}
                             {bulkPhase === "matching" &&
-                              "Algoritmul compara numele furnizorilor si sumele din facturi cu tranzactiile bancare"}
+                              "Algoritmul compara numele furnizorilor si sumele"}
                             {bulkPhase === "saving" &&
                               "Facturile potrivite sunt salvate si asociate cu tranzactiile"}
                           </p>
                         </div>
                       </div>
-
-                      {/* Progress bar */}
                       <div className="space-y-2">
                         <Progress
                           value={
@@ -1724,76 +1897,46 @@ export default function UploadPage() {
                           </p>
                         )}
                       </div>
-
-                      {/* Step indicators */}
                       <div className="flex items-center justify-center gap-2 text-xs">
-                        <span className={`flex items-center gap-1 px-2.5 py-1 rounded-full ${
-                          bulkPhase === "uploading"
-                            ? "bg-blue-100 text-blue-700 font-medium"
-                            : "bg-emerald-100 text-emerald-700"
-                        }`}>
-                          {bulkPhase !== "uploading" ? (
-                            <CheckCircle2 className="size-3" />
-                          ) : (
-                            <Loader2 className="size-3 animate-spin" />
-                          )}
-                          Incarcare
-                        </span>
-                        <ArrowRight className="size-3 text-muted-foreground" />
-                        <span className={`flex items-center gap-1 px-2.5 py-1 rounded-full ${
-                          bulkPhase === "scanning"
-                            ? "bg-blue-100 text-blue-700 font-medium"
-                            : bulkPhase === "uploading"
-                              ? "bg-muted text-muted-foreground"
-                              : "bg-emerald-100 text-emerald-700"
-                        }`}>
-                          {bulkPhase !== "uploading" && bulkPhase !== "scanning" ? (
-                            <CheckCircle2 className="size-3" />
-                          ) : bulkPhase === "scanning" ? (
-                            <Loader2 className="size-3 animate-spin" />
-                          ) : (
-                            <span className="size-3" />
-                          )}
-                          Scanare AI
-                        </span>
-                        <ArrowRight className="size-3 text-muted-foreground" />
-                        <span className={`flex items-center gap-1 px-2.5 py-1 rounded-full ${
-                          bulkPhase === "matching"
-                            ? "bg-blue-100 text-blue-700 font-medium"
-                            : bulkPhase === "saving"
-                              ? "bg-emerald-100 text-emerald-700"
-                              : "bg-muted text-muted-foreground"
-                        }`}>
-                          {bulkPhase === "saving" ? (
-                            <CheckCircle2 className="size-3" />
-                          ) : bulkPhase === "matching" ? (
-                            <Loader2 className="size-3 animate-spin" />
-                          ) : (
-                            <span className="size-3" />
-                          )}
-                          Potrivire
-                        </span>
-                        <ArrowRight className="size-3 text-muted-foreground" />
-                        <span className={`flex items-center gap-1 px-2.5 py-1 rounded-full ${
-                          bulkPhase === "saving"
-                            ? "bg-blue-100 text-blue-700 font-medium"
-                            : "bg-muted text-muted-foreground"
-                        }`}>
-                          {bulkPhase === "saving" ? (
-                            <Loader2 className="size-3 animate-spin" />
-                          ) : (
-                            <span className="size-3" />
-                          )}
-                          Salvare
-                        </span>
+                        {["Incarcare", "Scanare AI", "Potrivire", "Salvare"].map(
+                          (label, i) => {
+                            const phases = ["uploading", "scanning", "matching", "saving"];
+                            const phaseIdx = phases.indexOf(bulkPhase);
+                            const isDone = i < phaseIdx;
+                            const isActive = i === phaseIdx;
+                            return (
+                              <div key={label} className="flex items-center gap-1">
+                                {i > 0 && (
+                                  <ArrowRight className="size-3 text-muted-foreground mr-1" />
+                                )}
+                                <span
+                                  className={`flex items-center gap-1 px-2.5 py-1 rounded-full ${
+                                    isDone
+                                      ? "bg-emerald-100 text-emerald-700"
+                                      : isActive
+                                        ? "bg-blue-100 text-blue-700 font-medium"
+                                        : "bg-muted text-muted-foreground"
+                                  }`}
+                                >
+                                  {isDone ? (
+                                    <CheckCircle2 className="size-3" />
+                                  ) : isActive ? (
+                                    <Loader2 className="size-3 animate-spin" />
+                                  ) : (
+                                    <span className="size-3" />
+                                  )}
+                                  {label}
+                                </span>
+                              </div>
+                            );
+                          }
+                        )}
                       </div>
                     </div>
                   )}
 
-                  {/* DONE — Show results */}
                   {bulkState === "done" && (
                     <div className="space-y-4">
-                      {/* Summary */}
                       <div
                         className={`flex items-center gap-3 p-3 rounded-lg border ${
                           bulkMatchedCount > 0
@@ -1814,14 +1957,12 @@ export default function UploadPage() {
                           </p>
                           {unmatchedInvoices.length > 0 && (
                             <p className="text-xs text-amber-600 mt-0.5">
-                              {unmatchedInvoices.length} facturi necesita
-                              asociere manuala
+                              {unmatchedInvoices.length} facturi necesita asociere manuala
                             </p>
                           )}
                         </div>
                       </div>
 
-                      {/* Unmatched invoices */}
                       {unmatchedInvoices.length > 0 && (
                         <div className="space-y-2">
                           <p className="text-sm font-medium text-muted-foreground">
@@ -1848,9 +1989,7 @@ export default function UploadPage() {
                               </div>
                               <div className="flex items-center gap-2">
                                 <Select
-                                  value={
-                                    assignSelections[inv.fileIndex] || ""
-                                  }
+                                  value={assignSelections[inv.fileIndex] || ""}
                                   onValueChange={(v) =>
                                     setAssignSelections((prev) => ({
                                       ...prev,
@@ -1867,8 +2006,7 @@ export default function UploadPage() {
                                       .map((t) => (
                                         <SelectItem key={t.id} value={t.id}>
                                           {t.description.substring(0, 20)} —{" "}
-                                          {t.amount.toLocaleString("ro-RO")}{" "}
-                                          {t.currency}
+                                          {t.amount.toLocaleString("ro-RO")} {t.currency}
                                         </SelectItem>
                                       ))}
                                   </SelectContent>
@@ -1891,7 +2029,6 @@ export default function UploadPage() {
                         </div>
                       )}
 
-                      {/* Reset button */}
                       <Button
                         variant="outline"
                         size="sm"
@@ -1912,13 +2049,13 @@ export default function UploadPage() {
               </Card>
             )}
 
-            {/* Manual invoice add + No transactions state */}
+            {/* Manual invoice add */}
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <div className="p-2 rounded-lg bg-violet-50">
-                      <Receipt className="size-4 text-violet-600" />
+                      <Receipt className="size-5 text-violet-600" />
                     </div>
                     <div>
                       <CardTitle className="text-base">
@@ -1955,17 +2092,13 @@ export default function UploadPage() {
                   {manualOcrProcessing && (
                     <div className="flex items-center gap-2 p-3 rounded-lg bg-blue-50 border border-blue-200 animate-pulse">
                       <Sparkles className="size-4 text-blue-600 shrink-0" />
-                      <p className="text-sm text-blue-700">
-                        {manualOcrStatus}
-                      </p>
+                      <p className="text-sm text-blue-700">{manualOcrStatus}</p>
                     </div>
                   )}
                   {!manualOcrProcessing && manualOcrStatus && (
                     <div className="flex items-center gap-2 p-3 rounded-lg bg-emerald-50 border border-emerald-200">
                       <CheckCircle2 className="size-4 text-emerald-600 shrink-0" />
-                      <p className="text-sm text-emerald-700">
-                        {manualOcrStatus}
-                      </p>
+                      <p className="text-sm text-emerald-700">{manualOcrStatus}</p>
                     </div>
                   )}
 
@@ -1982,12 +2115,8 @@ export default function UploadPage() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="received">
-                            Primita (cheltuiala)
-                          </SelectItem>
-                          <SelectItem value="issued">
-                            Emisa (venit)
-                          </SelectItem>
+                          <SelectItem value="received">Primita (cheltuiala)</SelectItem>
+                          <SelectItem value="issued">Emisa (venit)</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -2050,8 +2179,7 @@ export default function UploadPage() {
                     >
                       {manualUploading ? (
                         <>
-                          <Loader2 className="size-4 animate-spin mr-2" /> Se
-                          incarca...
+                          <Loader2 className="size-4 animate-spin mr-2" /> Se incarca...
                         </>
                       ) : (
                         <>
@@ -2080,39 +2208,43 @@ export default function UploadPage() {
                 </CardContent>
               )}
             </Card>
-
-            {/* Bottom actions */}
-            <div className="flex items-center gap-3">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setStep(1);
-                  setOcrStatus("");
-                  setStatementError("");
-                  setStatementFiles([]);
-                  setCurrentStatementId(null);
-                  setDetectedTransactions([]);
-                  setBulkState("idle");
-                  setUnmatchedInvoices([]);
-                  setBulkMatchedCount(0);
-                  setAssignSelections({});
-                  setBulkSavedCount(0);
-                  setBulkCurrentFile("");
-                  bulkFilesRef.current.clear();
-                }}
-              >
-                Incarca alt extras
-              </Button>
-              {allUploaded && detectedTransactions.length > 0 && (
-                <div className="flex items-center gap-2 text-sm text-emerald-600">
-                  <CheckCircle2 className="size-4" />
-                  Toate facturile au fost incarcate. Contabila va fi notificata.
-                </div>
-              )}
-            </div>
           </div>
         )}
       </div>
+
+      {/* ==================== STICKY BOTTOM CONFIRMATION BAR ==================== */}
+      {step === 4 && (
+        <div className="fixed bottom-0 left-0 right-0 z-50 border-t-2 border-slate-700 bg-slate-900 shadow-[0_-4px_20px_rgba(0,0,0,0.3)]">
+          <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
+            <div className="text-white min-w-0">
+              <p className="font-semibold text-lg">Pasul 5: Confirmare</p>
+              <p className="text-slate-400 text-sm truncate">
+                {totalTxCount > 0
+                  ? `${uploadedCount}/${totalTxCount} facturi incarcate — ${MONTHS_RO[selectedMonth - 1]} ${selectedYear}`
+                  : `${MONTHS_RO[selectedMonth - 1]} ${selectedYear} — Confirma pentru a trimite contabilei`}
+              </p>
+            </div>
+            <Button
+              size="lg"
+              className="bg-emerald-600 hover:bg-emerald-500 text-white text-base font-semibold px-8 h-14 rounded-xl shadow-lg shrink-0"
+              onClick={handleConfirm}
+              disabled={isConfirming}
+            >
+              {isConfirming ? (
+                <>
+                  <Loader2 className="size-5 animate-spin mr-2" />
+                  Se confirma...
+                </>
+              ) : (
+                <>
+                  <Send className="size-5 mr-2" />
+                  Confirma si trimite
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* ==================== DELETE STATEMENT DIALOG ==================== */}
       <Dialog
